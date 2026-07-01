@@ -7,6 +7,10 @@ import structlog
 def configure_logging(log_level: str = "INFO") -> None:
     log_level_int = getattr(logging, log_level.upper(), logging.INFO)
 
+    # add_logger_name/add_log_level требуют логгеры из stdlib logging (с атрибутом .name),
+    # поэтому logger_factory должен быть stdlib.LoggerFactory(), а не PrintLoggerFactory().
+    logging.basicConfig(format="%(message)s", stream=sys.stdout, level=log_level_int)
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -21,7 +25,7 @@ def configure_logging(log_level: str = "INFO") -> None:
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level_int),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
