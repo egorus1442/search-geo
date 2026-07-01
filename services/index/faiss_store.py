@@ -138,7 +138,7 @@ class FaissStore:
             raise FileNotFoundError(f"FAISS index not found at {path}")
         store = cls(index_path=path, n_probe=n_probe)
         store._index = faiss.read_index(str(path))
-        store._index.nprobe = store.n_probe
+        store._ivf().nprobe = store.n_probe
         logger.info(
             "faiss_loaded",
             path=str(path),

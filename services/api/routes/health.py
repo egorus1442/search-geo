@@ -1,8 +1,11 @@
+import redis
 from fastapi import APIRouter
+from minio import Minio
 from sqlalchemy import text
 
 from services.api.schemas import HealthResponse
 from services.db.session import AsyncSessionLocal
+from services.matching.localize import _get_faiss
 from config import get_settings
 
 router = APIRouter(tags=["health"])
@@ -23,8 +26,7 @@ async def health_check():
 
     # Redis
     try:
-        import redis as redis_lib
-        r = redis_lib.from_url(_s.redis_url, socket_connect_timeout=2)
+        r = redis.from_url(_s.redis_url, socket_connect_timeout=2)
         r.ping()
         components["redis"] = "ok"
     except Exception as exc:
@@ -32,7 +34,6 @@ async def health_check():
 
     # MinIO
     try:
-        from minio import Minio
         client = Minio(
             _s.minio_endpoint,
             access_key=_s.minio_access_key,
@@ -46,7 +47,6 @@ async def health_check():
 
     # FAISS index
     try:
-        from services.matching.localize import _get_faiss
         store = _get_faiss()
         components["faiss"] = f"ok (ntotal={store.ntotal})"
     except Exception as exc:
