@@ -153,7 +153,7 @@ class FaissStore:
 
     @property
     def is_trained(self) -> bool:
-        return self._index is not None and self._index.is_trained
+        return self._index is not None and self._ivf().is_trained
 
     # ── Utils ─────────────────────────────────────────────────────────────────
 
