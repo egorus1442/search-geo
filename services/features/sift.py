@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from config import get_logger, get_settings
+from services.features.preprocess import preprocess_for_matching
 
 logger = get_logger(__name__)
 _s = get_settings()
@@ -22,8 +23,8 @@ def _build_detector() -> cv2.SIFT:  # type: ignore[name-defined]
     )
 
 
-def load_image_gray(source: Path | bytes | np.ndarray) -> np.ndarray:
-    """Загрузить изображение в grayscale uint8."""
+def load_image(source: Path | bytes | np.ndarray) -> np.ndarray:
+    """Загрузить изображение как есть (BGR или grayscale), без конвертации."""
     if isinstance(source, np.ndarray):
         img = source
     elif isinstance(source, bytes):
@@ -34,7 +35,12 @@ def load_image_gray(source: Path | bytes | np.ndarray) -> np.ndarray:
 
     if img is None:
         raise ValueError(f"Cannot load image from {type(source)}")
+    return img
 
+
+def load_image_gray(source: Path | bytes | np.ndarray) -> np.ndarray:
+    """Загрузить изображение в grayscale uint8."""
+    img = load_image(source)
     if img.ndim == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
@@ -45,14 +51,36 @@ def load_image_gray(source: Path | bytes | np.ndarray) -> np.ndarray:
 def extract_descriptors(
     source: Path | bytes | np.ndarray,
     max_side: int = 1024,
+    resize_scale: float | None = None,
+    normalize: bool | None = None,
+    use_clahe: bool | None = None,
+    use_lcn: bool | None = None,
 ) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:  # type: ignore[name-defined]
     """
     Извлечь SIFT дескрипторы из изображения.
 
+    Параметры предобработки (resize_scale/normalize/use_clahe/use_lcn) по
+    умолчанию берутся из настроек (`config.settings`) — см. `preprocess.py`.
+    Это гарантирует, что и патчи базы (index_task), и query-изображение
+    (localize) проходят ОДИНАКОВУЮ предобработку, что критично для честного
+    сравнения между разнородными доменами (UAV vs Sentinel-2).
+
     Возвращает (keypoints, descriptors).
     descriptors: float32 array shape (N, 128) или None если точек нет.
     """
-    gray = load_image_gray(source)
+    resize_scale = _s.preprocess_resize_scale if resize_scale is None else resize_scale
+    normalize = _s.preprocess_normalize_channels if normalize is None else normalize
+    use_clahe = _s.preprocess_use_clahe if use_clahe is None else use_clahe
+    use_lcn = _s.preprocess_use_lcn if use_lcn is None else use_lcn
+
+    img = load_image(source)
+    gray = preprocess_for_matching(
+        img,
+        resize_scale=resize_scale,
+        normalize=normalize,
+        use_clahe=use_clahe,
+        use_lcn=use_lcn,
+    )
 
     # Ограничиваем размер для скорости (не меняет координаты ключевых точек)
     h, w = gray.shape

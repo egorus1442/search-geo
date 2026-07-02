@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     sift_edge_threshold: int = 10
     sift_sigma: float = 1.6
 
+    # ── Preprocessing (эксперимент: сокращение domain gap UAV↔Sentinel-2) ───────
+    # По умолчанию всё выключено (=текущее поведение). Включать через .env для
+    # экспериментов — ВАЖНО: при изменении нужно пересобрать словарь и индекс,
+    # т.к. предобработка одинаково влияет и на патчи базы, и на query.
+    preprocess_resize_scale: float = 1.0       # <1.0 — понизить разрешение перед SIFT
+    preprocess_normalize_channels: bool = False  # percentile-стретч по каналам
+    preprocess_use_clahe: bool = False           # адаптивное выравнивание контраста
+    preprocess_use_lcn: bool = False             # локальная нормализация контраста ("норм. карта")
+
     # ── BoVW ──────────────────────────────────────────────────────────────────
     vocab_size: int = 1024
     vocab_sample_per_patch: int = 50
