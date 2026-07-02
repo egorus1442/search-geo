@@ -1,0 +1,314 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "GeoVision",
+    "description": "Геолокализация аэрофотоснимков по базе спутниковых тайлов",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "http://localhost:8000", "description": "Local / Docker Compose" }
+  ],
+  "tags": [
+    { "name": "health", "description": "Проверка состояния сервиса" },
+    { "name": "localize", "description": "Геолокализация изображений" },
+    { "name": "admin", "description": "Ingestion и управление индексом" }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Health check",
+        "operationId": "healthCheck",
+        "responses": {
+          "200": {
+            "description": "Статус сервиса и его зависимостей",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/localize": {
+      "post": {
+        "tags": ["localize"],
+        "summary": "Геолокализация изображения",
+        "description": "Принимает фото с дрона/зонда и возвращает top-N кандидатов с координатами по эталонной базе спутниковых снимков.",
+        "operationId": "localizeImage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["image"],
+                "properties": {
+                  "image": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Фото с дрона/зонда (JPEG/PNG/TIFF)"
+                  },
+                  "top_n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": 10,
+                    "description": "Количество возвращаемых кандидатов"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Результат геолокализации",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LocalizeResponse" }
+              }
+            }
+          },
+          "413": { "description": "Файл превышает максимально допустимый размер" },
+          "415": { "description": "Неподдерживаемый формат изображения" },
+          "500": { "description": "Ошибка при обработке изображения" },
+          "503": { "description": "Индекс ещё не построен" }
+        }
+      }
+    },
+    "/api/v1/admin/ingest": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Запустить ingestion региона",
+        "description": "Запускает асинхронное скачивание снимков Sentinel-2 по bbox и диапазону дат, нарезку на патчи и загрузку в хранилище.",
+        "operationId": "startIngest",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/IngestRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Задача ingestion поставлена в очередь",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskResponse" }
+              }
+            }
+          },
+          "422": { "description": "Некорректные параметры запроса" }
+        }
+      }
+    },
+    "/api/v1/admin/ingest/{task_id}": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Статус задачи ingestion",
+        "operationId": "getIngestStatus",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Статус и результат задачи",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskResponse" }
+              }
+            }
+          },
+          "400": { "description": "Некорректный формат task_id" },
+          "404": { "description": "Задача не найдена" }
+        }
+      }
+    },
+    "/api/v1/admin/index/vocabulary": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Обучить BoVW словарь",
+        "description": "Шаг 1 индексирования: кластеризует SIFT-дескрипторы всех патчей в словарь визуальных слов.",
+        "operationId": "startBuildVocabulary",
+        "responses": {
+          "202": {
+            "description": "Задача построения словаря поставлена в очередь",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/index/build": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Построить FAISS индекс",
+        "description": "Шаг 2 индексирования: строит FAISS IVF индекс из BoVW-гистограмм патчей (требует готового словаря).",
+        "operationId": "startBuildIndex",
+        "responses": {
+          "202": {
+            "description": "Задача построения индекса поставлена в очередь",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TaskResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/index/reload": {
+      "post": {
+        "tags": ["admin"],
+        "summary": "Перезагрузить индекс",
+        "description": "Перечитывает FAISS индекс и BoVW словарь с диска в память API-процесса после rebuild.",
+        "operationId": "reloadIndex",
+        "responses": {
+          "200": {
+            "description": "Индекс успешно перезагружен",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" },
+                    "message": { "type": "string", "example": "Indexes reloaded" }
+                  }
+                }
+              }
+            }
+          },
+          "500": { "description": "Ошибка перезагрузки индекса" }
+        }
+      }
+    },
+    "/api/v1/admin/index/stats": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Статистика индекса",
+        "operationId": "getIndexStats",
+        "responses": {
+          "200": {
+            "description": "Статистика FAISS индекса, словаря и базы патчей",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/IndexStatsResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status", "components"],
+        "properties": {
+          "status": { "type": "string", "enum": ["ok", "degraded"] },
+          "components": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "example": {
+              "postgres": "ok",
+              "redis": "ok",
+              "minio": "ok",
+              "faiss": "ok (ntotal=12345)"
+            }
+          }
+        }
+      },
+      "CandidateItem": {
+        "type": "object",
+        "required": ["rank", "patch_id", "center_lat", "center_lon", "bbox", "inlier_count", "confidence"],
+        "properties": {
+          "rank": { "type": "integer", "example": 1 },
+          "patch_id": { "type": "integer", "example": 42 },
+          "center_lat": { "type": "number", "format": "double", "example": 51.234 },
+          "center_lon": { "type": "number", "format": "double", "example": 36.789 },
+          "bbox": {
+            "type": "array",
+            "items": { "type": "number", "format": "double" },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "[lon_min, lat_min, lon_max, lat_max]",
+            "example": [36.77, 51.22, 36.80, 51.25]
+          },
+          "inlier_count": { "type": "integer", "example": 38 },
+          "confidence": { "type": "number", "format": "double", "minimum": 0, "maximum": 1, "example": 0.76 },
+          "thumbnail_url": { "type": "string", "nullable": true, "example": "http://minio:9000/geovision/patches/42.jpg" }
+        }
+      },
+      "LocalizeResponse": {
+        "type": "object",
+        "required": ["task_id", "status"],
+        "properties": {
+          "task_id": { "type": "string", "format": "uuid" },
+          "status": { "type": "string", "enum": ["completed", "pending", "failed"] },
+          "processing_time_ms": { "type": "integer", "nullable": true, "example": 12400 },
+          "candidates": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/CandidateItem" }
+          },
+          "error": { "type": "string", "nullable": true }
+        }
+      },
+      "IngestRequest": {
+        "type": "object",
+        "required": ["bbox", "date_from", "date_to"],
+        "properties": {
+          "bbox": {
+            "type": "array",
+            "items": { "type": "number", "format": "double" },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "[lon_min, lat_min, lon_max, lat_max]",
+            "example": [35.0, 50.0, 40.0, 55.0]
+          },
+          "date_from": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "example": "2023-06-01" },
+          "date_to": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "example": "2024-09-30" },
+          "cloud_cover_max": { "type": "number", "format": "double", "minimum": 0, "maximum": 100, "default": 20.0 }
+        }
+      },
+      "TaskResponse": {
+        "type": "object",
+        "required": ["task_id", "status", "type"],
+        "properties": {
+          "task_id": { "type": "string" },
+          "status": { "type": "string", "example": "running" },
+          "type": { "type": "string", "example": "ingest" },
+          "result": { "nullable": true },
+          "error": { "type": "string", "nullable": true }
+        }
+      },
+      "IndexStatsResponse": {
+        "type": "object",
+        "required": [
+          "faiss_ntotal", "faiss_dim", "faiss_n_lists", "faiss_n_probe",
+          "faiss_is_trained", "vocab_size", "patch_count_db"
+        ],
+        "properties": {
+          "faiss_ntotal": { "type": "integer", "example": 12345 },
+          "faiss_dim": { "type": "integer", "example": 1024 },
+          "faiss_n_lists": { "type": "integer", "example": 256 },
+          "faiss_n_probe": { "type": "integer", "example": 32 },
+          "faiss_is_trained": { "type": "boolean", "example": true },
+          "vocab_size": { "type": "integer", "example": 1024 },
+          "patch_count_db": { "type": "integer", "example": 12345 }
+        }
+      }
+    }
+  }
+}
