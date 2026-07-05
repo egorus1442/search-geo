@@ -10,7 +10,7 @@ import numpy as np
 from workers.celery_app import app
 from config import get_logger
 from services.db.session import SyncSessionLocal
-from services.features.sift import extract_descriptors
+from services.features.sift import extract_patch_descriptors
 from services.features.vocabulary import Vocabulary
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo
@@ -55,7 +55,7 @@ def build_vocabulary(self) -> dict:
                     continue
                 s3_path = meta_list[0]["s3_path"]
                 img_bytes = download_bytes(s3_path)
-                _, descs = extract_descriptors(img_bytes)
+                _, descs = extract_patch_descriptors(img_bytes)
                 if descs is not None:
                     yield descs
             except Exception as exc:
@@ -108,7 +108,7 @@ def build_index(self) -> dict:
         for meta in meta_list:
             try:
                 img_bytes = download_bytes(meta["s3_path"])
-                _, descs = extract_descriptors(img_bytes)
+                _, descs = extract_patch_descriptors(img_bytes)
                 hist = vocab.encode(descs)
                 all_hists.append(hist)
                 all_ids.append(meta["patch_id"])

@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     # экспериментов — ВАЖНО: при изменении нужно пересобрать словарь и индекс,
     # т.к. предобработка одинаково влияет и на патчи базы, и на query.
     preprocess_resize_scale: float = 1.0       # <1.0 — понизить разрешение перед SIFT
+    preprocess_query_resize_scale: float | None = None  # если задано, scale только для query/UAV
+    preprocess_patch_resize_scale: float | None = None  # если задано, scale только для Sentinel-патчей
     preprocess_normalize_channels: bool = False  # percentile-стретч по каналам
     preprocess_use_clahe: bool = False           # адаптивное выравнивание контраста
     preprocess_use_lcn: bool = False             # локальная нормализация контраста ("норм. карта")

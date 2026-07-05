@@ -84,6 +84,7 @@ def cut_patches(
     overlap_ratio: float | None = None,
     min_coverage: float | None = None,
     gsd_m: float | None = None,
+    aoi_bbox: list[float] | tuple[float, float, float, float] | None = None,
 ) -> Generator[PatchMeta, None, None]:
     """
     Нарезать .SAFE → патчи PNG в MinIO.
@@ -149,6 +150,18 @@ def cut_patches(
                 )
                 center_lon = (lon_min_p + lon_max_p) / 2
                 center_lat = (lat_min_p + lat_max_p) / 2
+
+                if aoi_bbox is not None:
+                    aoi_lon_min, aoi_lat_min, aoi_lon_max, aoi_lat_max = aoi_bbox
+                    intersects_aoi = not (
+                        lon_max_p < aoi_lon_min
+                        or lon_min_p > aoi_lon_max
+                        or lat_max_p < aoi_lat_min
+                        or lat_min_p > aoi_lat_max
+                    )
+                    if not intersects_aoi:
+                        skipped += 1
+                        continue
 
                 # Сохранить в MinIO
                 patch_id = str(uuid.uuid4())

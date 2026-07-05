@@ -51,9 +51,11 @@ def _ransac_inliers(
     c_kp: list[cv2.KeyPoint],  # type: ignore[name-defined]
     good_matches: list[cv2.DMatch],  # type: ignore[name-defined]
     ransac_threshold: float,
+    min_good_matches: int | None = None,
 ) -> int:
     """Применить RANSAC для нахождения гомографии. Вернуть число инлайеров."""
-    if len(good_matches) < _s.min_good_matches:
+    min_matches = _s.min_good_matches if min_good_matches is None else min_good_matches
+    if len(good_matches) < min_matches:
         return 0
 
     q_pts = np.float32([q_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)

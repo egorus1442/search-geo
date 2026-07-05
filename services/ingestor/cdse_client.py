@@ -30,6 +30,11 @@ _DOWNLOAD_BASE = "https://download.dataspace.copernicus.eu"
 _CDSE_PUBLIC_CLIENT_ID = "cdse-public"
 
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(min=2, max=20))
+def _catalog_get(url: str) -> requests.Response:
+    return requests.get(url, timeout=60)
+
+
 class CDSEToken:
     """
     OAuth2 token через password grant.
@@ -162,7 +167,7 @@ class CDSEClient:
                 f"&$skip={skip}"
                 f"&$orderby=ContentDate/Start asc"
             )
-            resp = requests.get(url, timeout=30)
+            resp = _catalog_get(url)
             resp.raise_for_status()
             page = resp.json().get("value", [])
             if not page:

@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 
 from config import get_logger, get_settings
-from services.features.sift import extract_descriptors
+from services.features.sift import extract_patch_descriptors, extract_query_descriptors
 from services.features.vocabulary import Vocabulary
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo
@@ -47,7 +47,7 @@ def _get_verifier() -> Verifier:
 def _load_candidate_descriptors(s3_path: str):
     """Скачать патч из MinIO и извлечь SIFT дескрипторы."""
     img_bytes = download_bytes(s3_path)
-    kp, desc = extract_descriptors(img_bytes)
+    kp, desc = extract_patch_descriptors(img_bytes)
     return kp, desc
 
 
@@ -65,7 +65,7 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
     top_n = top_n or _s.top_n_result
 
     # ── Step 1: SIFT ──────────────────────────────────────────────────────────
-    query_kp, query_desc = extract_descriptors(image_bytes)
+    query_kp, query_desc = extract_query_descriptors(image_bytes)
     if query_desc is None:
         logger.warning("localize_no_features")
         return []

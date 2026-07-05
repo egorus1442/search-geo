@@ -8,6 +8,7 @@
     python scripts/test_cdse.py --download   # скачать первый найденный продукт (~600 МБ)
 """
 import json
+import os
 import sys
 import urllib.error
 import urllib.parse
@@ -16,8 +17,22 @@ from pathlib import Path
 
 # ── Конфиг ────────────────────────────────────────────────────────────────────
 
-USERNAME  = "egorkarmishen@gmail.com"
-PASSWORD  = "132132880088.Ru"
+def load_dotenv() -> None:
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+load_dotenv()
+
+USERNAME = os.getenv("CDSE_USERNAME", "")
+PASSWORD = os.getenv("CDSE_PASSWORD", "")
 
 # Небольшой тестовый bbox — окрестности Харькова
 BBOX      = [35.9, 49.9, 36.5, 50.3]   # [lon_min, lat_min, lon_max, lat_max]
@@ -51,6 +66,10 @@ def http_get(url: str, token: str | None = None) -> dict:
 # ── Шаг 1: Аутентификация ─────────────────────────────────────────────────────
 
 def get_token() -> str:
+    if not USERNAME or not PASSWORD:
+        print("ERROR: set CDSE_USERNAME and CDSE_PASSWORD in .env or environment")
+        sys.exit(1)
+
     print("[1] Auth CDSE...", end=" ", flush=True)
     try:
         payload = http_post(TOKEN_URL, {

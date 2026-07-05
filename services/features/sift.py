@@ -97,3 +97,29 @@ def extract_descriptors(
 
     logger.debug("sift_extracted", n_keypoints=len(keypoints), shape=gray.shape)
     return list(keypoints), descriptors.astype(np.float32)
+
+
+def extract_query_descriptors(
+    source: Path | bytes | np.ndarray,
+    max_side: int = 1024,
+) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:  # type: ignore[name-defined]
+    """Извлечь дескрипторы для query/UAV с query-specific resize scale."""
+    resize_scale = (
+        _s.preprocess_query_resize_scale
+        if _s.preprocess_query_resize_scale is not None
+        else _s.preprocess_resize_scale
+    )
+    return extract_descriptors(source, max_side=max_side, resize_scale=resize_scale)
+
+
+def extract_patch_descriptors(
+    source: Path | bytes | np.ndarray,
+    max_side: int = 1024,
+) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:  # type: ignore[name-defined]
+    """Извлечь дескрипторы для Sentinel-патча с patch-specific resize scale."""
+    resize_scale = (
+        _s.preprocess_patch_resize_scale
+        if _s.preprocess_patch_resize_scale is not None
+        else _s.preprocess_resize_scale
+    )
+    return extract_descriptors(source, max_side=max_side, resize_scale=resize_scale)

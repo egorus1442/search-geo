@@ -34,6 +34,11 @@ def run_ingest(
     date_to: str,
     cloud_cover_max: float = 20.0,
     task_db_id: str | None = None,
+    max_products: int | None = None,
+    max_patches_per_product: int | None = None,
+    patch_size: int | None = None,
+    clip_to_bbox: bool = False,
+    run_label: str | None = None,
 ) -> dict:
     """
     Скачать продукты Sentinel-2 по параметрам и нарезать на патчи.
@@ -54,6 +59,7 @@ def run_ingest(
         date_from=d_from,
         date_to=d_to,
         cloud_cover_max=cloud_cover_max,
+        max_results=max_products or 100,
     )
     logger.info("ingest_found_products", count=len(products))
 
@@ -65,10 +71,11 @@ def run_ingest(
         for product in products:
             product_id: str = product["Id"]
             product_name: str = product.get("Name", product_id)
+            source_product_id = f"{product_id}:{run_label}" if run_label else product_id
 
             # Пропустить уже обработанные
-            if repo.tile_exists(product_id):
-                logger.info("ingest_skip_existing", product_id=product_id)
+            if repo.tile_exists(source_product_id):
+                logger.info("ingest_skip_existing", product_id=source_product_id)
                 stats["skipped"] += 1
                 continue
 
@@ -80,7 +87,7 @@ def run_ingest(
                     cloud_cover = attr.get("Value")
 
             tile_record = repo.create_source_tile(
-                product_id=product_id,
+                product_id=source_product_id,
                 bbox=bbox,  # упрощение: используем запросный bbox
                 date_acq=content_date,
                 cloud_cover=cloud_cover,
@@ -98,7 +105,16 @@ def run_ingest(
                     for patch_meta in cut_patches(
                         safe_dir=safe_dir,
                         source_tile_id=str(tile_record.id),
+                        patch_size=patch_size,
+                        aoi_bbox=bbox if clip_to_bbox else None,
                     ):
+                        if max_patches_per_product is not None and patch_count >= max_patches_per_product:
+                            logger.info(
+                                "ingest_patch_limit_reached",
+                                product_id=product_id,
+                                max_patches=max_patches_per_product,
+                            )
+                            break
                         repo.create_patch(
                             source_tile_id=tile_record.id,
                             center_lon=patch_meta.center_lon,
