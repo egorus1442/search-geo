@@ -29,6 +29,7 @@ class VerifiedCandidate:
     bbox: list[float]
     s3_path: str
     inlier_count: int
+    inlier_ratio: float
     confidence: float
 
 
@@ -53,7 +54,22 @@ def _ransac_inliers(
     ransac_threshold: float,
     min_good_matches: int | None = None,
 ) -> int:
-    """Применить RANSAC для нахождения гомографии. Вернуть число инлайеров."""
+    """
+    Применить RANSAC для нахождения геометрического преобразования между
+    query (надирный UAV-снимок) и кандидатом (ортопатч Sentinel-2).
+
+    Используем ограниченную модель — similarity/partial-affine (поворот +
+    единый масштаб + сдвиг, 4 DoF) вместо полной homography (8 DoF).
+    Физически оба снимка близки к надирным ортопроекциям одного участка
+    земли, так что реальное преобразование между ними — почти affine, а не
+    произвольная перспектива. Homography с 8 степенями свободы слишком легко
+    "натягивается" на случайный набор совпадений при повторяющихся текстурах
+    (поля, лес, ряды застройки), давая ложно высокий inlier_count у неверных
+    тайлов. Affine-модель ограничивает вырожденные решения и должна резко
+    снизить долю таких ложных срабатываний.
+
+    Вернуть число инлайеров.
+    """
     min_matches = _s.min_good_matches if min_good_matches is None else min_good_matches
     if len(good_matches) < min_matches:
         return 0
@@ -61,7 +77,7 @@ def _ransac_inliers(
     q_pts = np.float32([q_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
     c_pts = np.float32([c_kp[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
 
-    _, mask = cv2.findHomography(q_pts, c_pts, cv2.RANSAC, ransac_threshold)
+    _, mask = cv2.estimateAffinePartial2D(q_pts, c_pts, method=cv2.RANSAC, ransacReprojThreshold=ransac_threshold)
     if mask is None:
         return 0
     return int(mask.sum())
@@ -128,6 +144,16 @@ class Verifier:
             inliers = _ransac_inliers(query_kp, cand_kp, good, self.ransac_threshold)
 
             if inliers > 0:
+                # inlier_ratio = доля good-матчей, подтверждённых RANSAC.
+                # Одного inlier_count недостаточно: тайлы с "богатой" текстурой
+                # (застройка) статистически дают больше keypoints/матчей и,
+                # соответственно, больше инлаеров просто по объёму, независимо
+                # от того, верный это тайл или нет. inlier_ratio нормирует
+                # это смещение. Итоговый score = inliers * inlier_ratio —
+                # компромисс между "достаточно доказательств" (count) и
+                # "насколько чистое совпадение" (ratio), см. рекомендацию
+                # по борьбе с ложными срабатываниями на похожих тайлах.
+                inlier_ratio = inliers / len(good) if good else 0.0
                 confidence = min(inliers / 50.0, 1.0)
                 verified.append(
                     VerifiedCandidate(
@@ -137,11 +163,12 @@ class Verifier:
                         bbox=cand["bbox"],
                         s3_path=cand["s3_path"],
                         inlier_count=inliers,
+                        inlier_ratio=round(inlier_ratio, 4),
                         confidence=round(confidence, 4),
                     )
                 )
 
-        verified.sort(key=lambda x: x.inlier_count, reverse=True)
+        verified.sort(key=lambda x: x.inlier_count * x.inlier_ratio, reverse=True)
         logger.info(
             "verifier_done",
             n_candidates=len(candidates),

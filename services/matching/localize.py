@@ -8,6 +8,12 @@
   4. Загрузка метаданных из PostgreSQL (координаты, s3_path)
   5. Верификация (BFMatcher + RANSAC) → top-N
   6. Возврат результатов
+
+Если Settings.exhaustive_search=True, шаги 2-3 (BoVW/FAISS) пропускаются и
+на верификацию (шаг 5) подаются ВСЕ патчи из БД напрямую. Временный режим
+для маленькой базы, пока BoVW coarse-фильтр плохо откалиброван (см. честный
+тест на UAV-фото Харьковского ботсада — BoVW отсекал верный патч ещё до
+RANSAC). Включается через .env: EXHAUSTIVE_SEARCH=true.
 """
 from __future__ import annotations
 
@@ -70,27 +76,40 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
         logger.warning("localize_no_features")
         return []
 
-    # ── Step 2: BoVW encoding ─────────────────────────────────────────────────
-    vocab = _get_vocab()
-    query_hist = vocab.encode(query_desc)
+    if _s.exhaustive_search:
+        # ── Steps 2-4 (bypass): без BoVW/FAISS, берём ВСЕ патчи из БД ─────────
+        # Временный режим, см. Settings.exhaustive_search.
+        logger.info("localize_exhaustive_mode")
+        with SyncSessionLocal() as session:
+            repo = PatchRepo(session)
+            all_ids = repo.get_all_patch_ids()
+            candidates = repo.get_patches_by_ids(all_ids)
 
-    # ── Step 3: FAISS coarse search ───────────────────────────────────────────
-    store = _get_faiss()
-    distances, candidate_ids = store.search(query_hist, k=_s.top_n_coarse)
+        if not candidates:
+            logger.warning("localize_no_candidates")
+            return []
+    else:
+        # ── Step 2: BoVW encoding ─────────────────────────────────────────────
+        vocab = _get_vocab()
+        query_hist = vocab.encode(query_desc)
 
-    # Фильтруем невалидные ID (-1 у FAISS означает пустую ячейку)
-    valid_ids = [int(pid) for pid in candidate_ids if pid != -1]
-    if not valid_ids:
-        logger.warning("localize_no_faiss_candidates")
-        return []
+        # ── Step 3: FAISS coarse search ────────────────────────────────────────
+        store = _get_faiss()
+        distances, candidate_ids = store.search(query_hist, k=_s.top_n_coarse)
 
-    # ── Step 4: Metadata from PostgreSQL ─────────────────────────────────────
-    with SyncSessionLocal() as session:
-        repo = PatchRepo(session)
-        candidates = repo.get_patches_by_ids(valid_ids)
+        # Фильтруем невалидные ID (-1 у FAISS означает пустую ячейку)
+        valid_ids = [int(pid) for pid in candidate_ids if pid != -1]
+        if not valid_ids:
+            logger.warning("localize_no_faiss_candidates")
+            return []
 
-    if not candidates:
-        return []
+        # ── Step 4: Metadata from PostgreSQL ─────────────────────────────────────
+        with SyncSessionLocal() as session:
+            repo = PatchRepo(session)
+            candidates = repo.get_patches_by_ids(valid_ids)
+
+        if not candidates:
+            return []
 
     # ── Step 5: RANSAC verification ───────────────────────────────────────────
     verifier = _get_verifier()
@@ -116,6 +135,7 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
             "center_lon": round(cand.center_lon, 6),
             "bbox": [round(c, 6) for c in cand.bbox],
             "inlier_count": cand.inlier_count,
+            "inlier_ratio": cand.inlier_ratio,
             "confidence": cand.confidence,
             "thumbnail_url": thumbnail_url,
         })

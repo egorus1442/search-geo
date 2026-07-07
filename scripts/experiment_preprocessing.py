@@ -113,14 +113,16 @@ def _match_one(
     lowe_ratio: float,
     ransac_threshold: float,
     min_good_matches: int,
-) -> int:
-    """Вернуть число RANSAC-инлайеров между query и одним кандидатом."""
+) -> tuple[int, float]:
+    """Вернуть (inlier_count, inlier_ratio) между query и одним кандидатом."""
     if q_desc is None or c_desc is None or len(c_desc) < min_good_matches:
-        return 0
+        return 0, 0.0
     bf = cv2.BFMatcher(cv2.NORM_L2)
     matches = bf.knnMatch(q_desc, c_desc, k=2)
     good = _ratio_test(matches, lowe_ratio)
-    return _ransac_inliers(q_kp, c_kp, good, ransac_threshold, min_good_matches=min_good_matches)
+    inliers = _ransac_inliers(q_kp, c_kp, good, ransac_threshold, min_good_matches=min_good_matches)
+    ratio = inliers / len(good) if good else 0.0
+    return inliers, ratio
 
 
 def run_config(
@@ -152,34 +154,41 @@ def run_config(
     results = []
     for cand in candidates:
         c_kp, c_desc = extract_descriptors(_load_candidate_source(cand), resize_scale=patch_scale, **kwargs)
-        inliers = _match_one(q_kp, q_desc, c_kp, c_desc, lowe_ratio, ransac_threshold, min_good_matches)
-        results.append((cand, inliers, len(c_kp) if c_kp else 0))
+        inliers, ratio = _match_one(q_kp, q_desc, c_kp, c_desc, lowe_ratio, ransac_threshold, min_good_matches)
+        score = inliers * ratio
+        results.append((cand, inliers, ratio, score, len(c_kp) if c_kp else 0))
 
-    results.sort(key=lambda x: x[1], reverse=True)
+    # score = inliers * inlier_ratio — см. verifier.py: убирает смещение в
+    # пользу "богатых" текстурой тайлов, у которых просто больше keypoints.
+    results.sort(key=lambda x: x[3], reverse=True)
 
     def is_truth(candidate: CandidatePatch) -> bool:
         if truth_patch_id is not None:
             return candidate.patch_id == truth_patch_id
         return truth_name is not None and candidate.name == truth_name
 
-    rank = next((i + 1 for i, (cand, _, _) in enumerate(results) if is_truth(cand)), None)
-    truth_inliers = next((inl for cand, inl, _ in results if is_truth(cand)), 0)
+    rank = next((i + 1 for i, (cand, *_rest) in enumerate(results) if is_truth(cand)), None)
+    truth_inliers = next((inl for cand, inl, _r, _s, _n in results if is_truth(cand)), 0)
+    truth_ratio = next((r for cand, _i, r, _s, _n in results if is_truth(cand)), 0.0)
 
     return {
         "n_query_kp": len(q_kp),
         "rank": rank,
         "n_candidates": len(results),
         "truth_inliers": truth_inliers,
+        "truth_ratio": round(truth_ratio, 3),
         "top5": [
             {
                 "name": cand.name,
                 "patch_id": cand.patch_id,
                 "inliers": inliers,
+                "ratio": round(ratio, 3),
+                "score": round(score, 2),
                 "n_kp": n_kp,
                 "center_lat": cand.center_lat,
                 "center_lon": cand.center_lon,
             }
-            for cand, inliers, n_kp in results[:5]
+            for cand, inliers, ratio, score, n_kp in results[:5]
         ],
         "elapsed_s": round(time.time() - t0, 1),
     }
@@ -258,7 +267,10 @@ def main(
     clahe_opts = [False, True] if sweep_clahe else [False]
     lcn_opts = [False, True] if sweep_lcn else [False]
 
-    header = f"{'q_s':>6} {'p_s':>6} {'norm':>5} {'clahe':>6} {'lcn':>5} {'q_kp':>6} {'rank':>6} {'inliers':>8} {'time_s':>7}"
+    header = (
+        f"{'q_s':>6} {'p_s':>6} {'norm':>5} {'clahe':>6} {'lcn':>5} "
+        f"{'q_kp':>6} {'rank':>6} {'inliers':>8} {'ratio':>6} {'time_s':>7}"
+    )
     click.echo(header)
     click.echo("-" * len(header))
 
@@ -276,7 +288,8 @@ def main(
         rank_str = str(res["rank"]) if res["rank"] else "NOT FOUND"
         line = (
             f"{q_scale:>6} {p_scale:>6} {norm!s:>5} {clahe!s:>6} {lcn!s:>5} "
-            f"{res['n_query_kp']:>6} {rank_str:>6} {res['truth_inliers']:>8} {res['elapsed_s']:>7}"
+            f"{res['n_query_kp']:>6} {rank_str:>6} {res['truth_inliers']:>8} "
+            f"{res['truth_ratio']:>6} {res['elapsed_s']:>7}"
         )
         click.echo(line)
         all_results.append({"query_scale": q_scale, "patch_scale": p_scale, "normalize": norm, "clahe": clahe, "lcn": lcn, **res})

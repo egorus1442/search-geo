@@ -232,7 +232,7 @@
       },
       "CandidateItem": {
         "type": "object",
-        "required": ["rank", "patch_id", "center_lat", "center_lon", "bbox", "inlier_count", "confidence"],
+        "required": ["rank", "patch_id", "center_lat", "center_lon", "bbox", "inlier_count", "inlier_ratio", "confidence"],
         "properties": {
           "rank": { "type": "integer", "example": 1 },
           "patch_id": { "type": "integer", "example": 42 },
@@ -247,6 +247,7 @@
             "example": [36.77, 51.22, 36.80, 51.25]
           },
           "inlier_count": { "type": "integer", "example": 38 },
+          "inlier_ratio": { "type": "number", "format": "double", "minimum": 0, "maximum": 1, "example": 0.62, "description": "inlier_count / good_matches — доля RANSAC-инлайеров среди отфильтрованных ratio-test совпадений" },
           "confidence": { "type": "number", "format": "double", "minimum": 0, "maximum": 1, "example": 0.76 },
           "thumbnail_url": { "type": "string", "nullable": true, "example": "http://minio:9000/geovision/patches/42.jpg" }
         }

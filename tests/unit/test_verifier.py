@@ -71,9 +71,9 @@ class TestVerifier:
 
         # Мокаем результат напрямую
         cands = [
-            VerifiedCandidate(1, 51.0, 36.0, [], "", inlier_count=5, confidence=0.1),
-            VerifiedCandidate(2, 52.0, 37.0, [], "", inlier_count=20, confidence=0.4),
-            VerifiedCandidate(3, 53.0, 38.0, [], "", inlier_count=12, confidence=0.24),
+            VerifiedCandidate(1, 51.0, 36.0, [], "", inlier_count=5, inlier_ratio=0.5, confidence=0.1),
+            VerifiedCandidate(2, 52.0, 37.0, [], "", inlier_count=20, inlier_ratio=0.5, confidence=0.4),
+            VerifiedCandidate(3, 53.0, 38.0, [], "", inlier_count=12, inlier_ratio=0.5, confidence=0.24),
         ]
         cands.sort(key=lambda x: x.inlier_count, reverse=True)
         assert cands[0].inlier_count == 20

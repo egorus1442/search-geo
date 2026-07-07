@@ -167,7 +167,7 @@ def main(
         for i, p in enumerate(verified, start=1):
             mark = "*" if p.patch_id in expected_ids else " "
             click.echo(
-                f"  {i:02d}{mark} patch_id={p.patch_id} inliers={p.inlier_count} "
+                f"  {i:02d}{mark} patch_id={p.patch_id} inliers={p.inlier_count} ratio={p.inlier_ratio:.2f} "
                 f"conf={p.confidence:.2f} lat={p.center_lat:.6f} lon={p.center_lon:.6f}"
             )
 
