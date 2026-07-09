@@ -23,7 +23,12 @@ from typing import Any
 import numpy as np
 
 from config import get_logger, get_settings
-from services.features.sift import extract_patch_descriptors, extract_query_descriptors
+from services.features.sift import (
+    extract_patch_descriptors,
+    extract_patch_gray,
+    extract_query_descriptors,
+    extract_query_gray,
+)
 from services.features.vocabulary import Vocabulary
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo
@@ -51,10 +56,16 @@ def _get_verifier() -> Verifier:
 
 
 def _load_candidate_descriptors(s3_path: str):
-    """Скачать патч из MinIO и извлечь SIFT дескрипторы."""
+    """
+    Скачать патч из MinIO и извлечь SIFT дескрипторы + grayscale (для
+    photometric-проверки после варпа, см. verifier.py). Патч уже маленький
+    (64×64px при текущем patch_size), так что держать ещё и gray в памяти
+    рядом с дескрипторами дёшево.
+    """
     img_bytes = download_bytes(s3_path)
     kp, desc = extract_patch_descriptors(img_bytes)
-    return kp, desc
+    gray = extract_patch_gray(img_bytes) if _s.photometric_check_enabled else None
+    return kp, desc, gray
 
 
 def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any]]:
@@ -75,6 +86,8 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
     if query_desc is None:
         logger.warning("localize_no_features")
         return []
+
+    query_gray = extract_query_gray(image_bytes) if _s.photometric_check_enabled else None
 
     if _s.exhaustive_search:
         # ── Steps 2-4 (bypass): без BoVW/FAISS, берём ВСЕ патчи из БД ─────────
@@ -118,6 +131,7 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
         query_desc=query_desc,
         candidates=candidates,
         load_desc_fn=_load_candidate_descriptors,
+        query_gray=query_gray,
     )
 
     # ── Step 6: Format result ─────────────────────────────────────────────────
@@ -136,6 +150,7 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
             "bbox": [round(c, 6) for c in cand.bbox],
             "inlier_count": cand.inlier_count,
             "inlier_ratio": cand.inlier_ratio,
+            "photometric_score": cand.photometric_score,
             "confidence": cand.confidence,
             "thumbnail_url": thumbnail_url,
         })

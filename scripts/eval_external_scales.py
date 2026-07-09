@@ -44,7 +44,8 @@ def _patch_meta(patch: Patch) -> dict:
 
 
 def _load_desc(s3_path: str):
-    return extract_descriptors(download_bytes(s3_path))
+    kp, desc = extract_descriptors(download_bytes(s3_path))
+    return kp, desc, None  # gray=None: этот скрипт не тестирует photometric-фильтр
 
 
 @click.command()
@@ -83,11 +84,11 @@ def main(
 
     expected_ids = {int(x) for x in expected.split(",") if x.strip()}
     verifier = Verifier(top_n=10)
-    desc_cache: dict[str, tuple[object, np.ndarray | None]] = {}
+    desc_cache: dict[str, tuple[object, np.ndarray | None, object]] = {}
 
     def load_desc_cached(s3_path: str):
         if s3_path not in desc_cache:
-            desc_cache[s3_path] = extract_descriptors(download_bytes(s3_path))
+            desc_cache[s3_path] = _load_desc(s3_path)
         return desc_cache[s3_path]
 
     with SyncSessionLocal() as session:

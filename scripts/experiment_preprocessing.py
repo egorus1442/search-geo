@@ -37,11 +37,11 @@ import click
 from geoalchemy2.shape import to_shape
 
 from config import configure_logging
-from services.features.sift import extract_descriptors
+from services.features.sift import extract_descriptors, load_gray_for_matching
 from services.ingestor.storage import download_bytes
 from services.db.models import Patch
 from services.db.session import SyncSessionLocal
-from services.matching.verifier import _ransac_inliers, _ratio_test
+from services.matching.verifier import _ncc, _photometric_score, _ransac_inliers, _ratio_test
 
 
 @dataclass(frozen=True)
@@ -113,16 +113,30 @@ def _match_one(
     lowe_ratio: float,
     ransac_threshold: float,
     min_good_matches: int,
-) -> tuple[int, float]:
-    """Вернуть (inlier_count, inlier_ratio) между query и одним кандидатом."""
+    query_gray=None,
+    cand_gray=None,
+    photometric_min_overlap: float = 0.3,
+) -> tuple[int, float, float]:
+    """Вернуть (inlier_count, inlier_ratio, photometric_score) между query и кандидатом.
+
+    photometric_score считается только если переданы query_gray/cand_gray
+    (см. --photometric в CLI) — офлайн-способ проверить эффект NCC-фильтра
+    ДО включения `PHOTOMETRIC_CHECK_ENABLED` в проде, той же методологией,
+    что и остальные эксперименты в этом скрипте.
+    """
     if q_desc is None or c_desc is None or len(c_desc) < min_good_matches:
-        return 0, 0.0
+        return 0, 0.0, 0.0
     bf = cv2.BFMatcher(cv2.NORM_L2)
     matches = bf.knnMatch(q_desc, c_desc, k=2)
     good = _ratio_test(matches, lowe_ratio)
-    inliers = _ransac_inliers(q_kp, c_kp, good, ransac_threshold, min_good_matches=min_good_matches)
+    inliers, M = _ransac_inliers(q_kp, c_kp, good, ransac_threshold, min_good_matches=min_good_matches)
     ratio = inliers / len(good) if good else 0.0
-    return inliers, ratio
+
+    photometric = 0.0
+    if inliers > 0 and query_gray is not None and cand_gray is not None and M is not None:
+        photometric = _photometric_score(query_gray, cand_gray, M, photometric_min_overlap)
+
+    return inliers, ratio, photometric
 
 
 def run_config(
@@ -138,6 +152,8 @@ def run_config(
     lowe_ratio: float,
     ransac_threshold: float,
     min_good_matches: int,
+    photometric: bool = False,
+    photometric_min_overlap: float = 0.3,
 ) -> dict:
     t0 = time.time()
 
@@ -151,16 +167,26 @@ def run_config(
     if q_desc is None:
         return {"error": "no query descriptors", "n_query_kp": 0}
 
+    query_gray = load_gray_for_matching(query_path, resize_scale=query_scale, **kwargs) if photometric else None
+
     results = []
     for cand in candidates:
-        c_kp, c_desc = extract_descriptors(_load_candidate_source(cand), resize_scale=patch_scale, **kwargs)
-        inliers, ratio = _match_one(q_kp, q_desc, c_kp, c_desc, lowe_ratio, ransac_threshold, min_good_matches)
-        score = inliers * ratio
-        results.append((cand, inliers, ratio, score, len(c_kp) if c_kp else 0))
+        cand_source = _load_candidate_source(cand)
+        c_kp, c_desc = extract_descriptors(cand_source, resize_scale=patch_scale, **kwargs)
+        cand_gray = load_gray_for_matching(cand_source, resize_scale=patch_scale, **kwargs) if photometric else None
+        inliers, ratio, ncc = _match_one(
+            q_kp, q_desc, c_kp, c_desc, lowe_ratio, ransac_threshold, min_good_matches,
+            query_gray=query_gray, cand_gray=cand_gray, photometric_min_overlap=photometric_min_overlap,
+        )
+        photometric_factor = ncc if photometric else 1.0
+        score = inliers * ratio * photometric_factor
+        results.append((cand, inliers, ratio, ncc, score, len(c_kp) if c_kp else 0))
 
-    # score = inliers * inlier_ratio — см. verifier.py: убирает смещение в
-    # пользу "богатых" текстурой тайлов, у которых просто больше keypoints.
-    results.sort(key=lambda x: x[3], reverse=True)
+    # score = inliers * inlier_ratio [* NCC] — см. verifier.py: inlier_ratio
+    # убирает смещение в пользу "богатых" текстурой тайлов (больше keypoints
+    # → больше инлаеров по объёму), NCC — доп. фотометрический фильтр против
+    # геометрически похожих, но по факту случайных совпадений.
+    results.sort(key=lambda x: x[4], reverse=True)
 
     def is_truth(candidate: CandidatePatch) -> bool:
         if truth_patch_id is not None:
@@ -168,8 +194,9 @@ def run_config(
         return truth_name is not None and candidate.name == truth_name
 
     rank = next((i + 1 for i, (cand, *_rest) in enumerate(results) if is_truth(cand)), None)
-    truth_inliers = next((inl for cand, inl, _r, _s, _n in results if is_truth(cand)), 0)
-    truth_ratio = next((r for cand, _i, r, _s, _n in results if is_truth(cand)), 0.0)
+    truth_inliers = next((inl for cand, inl, _r, _n, _s, _kp in results if is_truth(cand)), 0)
+    truth_ratio = next((r for cand, _i, r, _n, _s, _kp in results if is_truth(cand)), 0.0)
+    truth_ncc = next((n for cand, _i, _r, n, _s, _kp in results if is_truth(cand)), 0.0)
 
     return {
         "n_query_kp": len(q_kp),
@@ -177,18 +204,20 @@ def run_config(
         "n_candidates": len(results),
         "truth_inliers": truth_inliers,
         "truth_ratio": round(truth_ratio, 3),
+        "truth_ncc": round(truth_ncc, 3),
         "top5": [
             {
                 "name": cand.name,
                 "patch_id": cand.patch_id,
                 "inliers": inliers,
                 "ratio": round(ratio, 3),
+                "ncc": round(ncc, 3),
                 "score": round(score, 2),
                 "n_kp": n_kp,
                 "center_lat": cand.center_lat,
                 "center_lon": cand.center_lon,
             }
-            for cand, inliers, ratio, score, n_kp in results[:5]
+            for cand, inliers, ratio, ncc, score, n_kp in results[:5]
         ],
         "elapsed_s": round(time.time() - t0, 1),
     }
@@ -219,12 +248,17 @@ def run_config(
 @click.option("--lowe-ratio", default=0.75, show_default=True)
 @click.option("--ransac-threshold", default=5.0, show_default=True)
 @click.option("--min-good-matches", default=4, show_default=True)
+@click.option("--photometric/--no-photometric", default=False, show_default=True,
+              help="Добавить NCC-проверку после варпа (см. PHOTOMETRIC_CHECK_ENABLED) "
+                   "в скор: score = inliers * ratio * ncc")
+@click.option("--photometric-min-overlap", default=0.3, show_default=True,
+              help="Мин. доля перекрытия после варпа, ниже которой NCC не считается")
 @click.option("--log-level", default="WARNING", show_default=True)
 def main(
     query, patches_dir, from_db, truth_file, truth_patch_id,
     patch_size, product_contains, bbox, limit,
     scales, query_scales, patch_scales, sweep_normalize, sweep_clahe, sweep_lcn,
-    lowe_ratio, ransac_threshold, min_good_matches, log_level,
+    lowe_ratio, ransac_threshold, min_good_matches, photometric, photometric_min_overlap, log_level,
 ):
     configure_logging(log_level)
 
@@ -269,7 +303,7 @@ def main(
 
     header = (
         f"{'q_s':>6} {'p_s':>6} {'norm':>5} {'clahe':>6} {'lcn':>5} "
-        f"{'q_kp':>6} {'rank':>6} {'inliers':>8} {'ratio':>6} {'time_s':>7}"
+        f"{'q_kp':>6} {'rank':>6} {'inliers':>8} {'ratio':>6} {'ncc':>6} {'time_s':>7}"
     )
     click.echo(header)
     click.echo("-" * len(header))
@@ -280,6 +314,7 @@ def main(
             query_path, candidates, truth_file, truth_patch_id,
             query_scale=q_scale, patch_scale=p_scale, normalize=norm, use_clahe=clahe, use_lcn=lcn,
             lowe_ratio=lowe_ratio, ransac_threshold=ransac_threshold, min_good_matches=min_good_matches,
+            photometric=photometric, photometric_min_overlap=photometric_min_overlap,
         )
         if "error" in res:
             click.echo(f"{q_scale:>6} {p_scale:>6} {norm!s:>5} {clahe!s:>6} {lcn!s:>5}   -- {res['error']} --")
@@ -289,7 +324,7 @@ def main(
         line = (
             f"{q_scale:>6} {p_scale:>6} {norm!s:>5} {clahe!s:>6} {lcn!s:>5} "
             f"{res['n_query_kp']:>6} {rank_str:>6} {res['truth_inliers']:>8} "
-            f"{res['truth_ratio']:>6} {res['elapsed_s']:>7}"
+            f"{res['truth_ratio']:>6} {res['truth_ncc']:>6} {res['elapsed_s']:>7}"
         )
         click.echo(line)
         all_results.append({"query_scale": q_scale, "patch_scale": p_scale, "normalize": norm, "clahe": clahe, "lcn": lcn, **res})

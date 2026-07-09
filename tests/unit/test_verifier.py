@@ -25,7 +25,7 @@ class TestVerifier:
             query_kp=[],
             query_desc=None,
             candidates=[],
-            load_desc_fn=lambda s: ([], None),
+            load_desc_fn=lambda s: ([], None, None),
         )
         assert result == []
 
@@ -36,7 +36,7 @@ class TestVerifier:
             query_kp=kp,
             query_desc=desc,
             candidates=[],
-            load_desc_fn=lambda s: ([], None),
+            load_desc_fn=lambda s: ([], None, None),
         )
         assert result == []
 
@@ -51,7 +51,7 @@ class TestVerifier:
         ]
 
         def load_same(s3_path):
-            return kp, desc
+            return kp, desc, None
 
         result = verifier.verify(
             query_kp=kp,

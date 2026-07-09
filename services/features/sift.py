@@ -48,25 +48,22 @@ def load_image_gray(source: Path | bytes | np.ndarray) -> np.ndarray:
     return gray
 
 
-def extract_descriptors(
+def load_gray_for_matching(
     source: Path | bytes | np.ndarray,
     max_side: int = 1024,
     resize_scale: float | None = None,
     normalize: bool | None = None,
     use_clahe: bool | None = None,
     use_lcn: bool | None = None,
-) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:  # type: ignore[name-defined]
+) -> np.ndarray:
     """
-    Извлечь SIFT дескрипторы из изображения.
-
-    Параметры предобработки (resize_scale/normalize/use_clahe/use_lcn) по
-    умолчанию берутся из настроек (`config.settings`) — см. `preprocess.py`.
-    Это гарантирует, что и патчи базы (index_task), и query-изображение
-    (localize) проходят ОДИНАКОВУЮ предобработку, что критично для честного
-    сравнения между разнородными доменами (UAV vs Sentinel-2).
-
-    Возвращает (keypoints, descriptors).
-    descriptors: float32 array shape (N, 128) или None если точек нет.
+    Общий шаг подготовки изображения перед SIFT (и перед photometric-проверкой
+    после варпа, см. `services/matching/verifier.py`). Публичная функция (не
+    только для `extract_query_gray`/`extract_patch_gray`, но и для
+    `scripts/experiment_preprocessing.py`, где resize_scale подбирается вручную
+    через CLI, а не берётся из настроек) — координаты ключевых точек и этой
+    картинки должны быть согласованы, иначе affine-матрица из RANSAC не будет
+    соответствовать пиксельным координатам при варпинге.
     """
     resize_scale = _s.preprocess_resize_scale if resize_scale is None else resize_scale
     normalize = _s.preprocess_normalize_channels if normalize is None else normalize
@@ -87,6 +84,30 @@ def extract_descriptors(
     if max(h, w) > max_side:
         scale = max_side / max(h, w)
         gray = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    return gray
+
+
+def extract_descriptors(
+    source: Path | bytes | np.ndarray,
+    max_side: int = 1024,
+    resize_scale: float | None = None,
+    normalize: bool | None = None,
+    use_clahe: bool | None = None,
+    use_lcn: bool | None = None,
+) -> tuple[list[cv2.KeyPoint], np.ndarray | None]:  # type: ignore[name-defined]
+    """
+    Извлечь SIFT дескрипторы из изображения.
+
+    Параметры предобработки (resize_scale/normalize/use_clahe/use_lcn) по
+    умолчанию берутся из настроек (`config.settings`) — см. `preprocess.py`.
+    Это гарантирует, что и патчи базы (index_task), и query-изображение
+    (localize) проходят ОДИНАКОВУЮ предобработку, что критично для честного
+    сравнения между разнородными доменами (UAV vs Sentinel-2).
+
+    Возвращает (keypoints, descriptors).
+    descriptors: float32 array shape (N, 128) или None если точек нет.
+    """
+    gray = load_gray_for_matching(source, max_side, resize_scale, normalize, use_clahe, use_lcn)
 
     detector = _build_detector()
     keypoints, descriptors = detector.detectAndCompute(gray, None)
@@ -123,3 +144,28 @@ def extract_patch_descriptors(
         else _s.preprocess_resize_scale
     )
     return extract_descriptors(source, max_side=max_side, resize_scale=resize_scale)
+
+
+def extract_query_gray(source: Path | bytes | np.ndarray, max_side: int = 1024) -> np.ndarray:
+    """
+    Grayscale query-изображение ПОСЛЕ той же предобработки, что видел SIFT
+    (см. `extract_query_descriptors`) — координаты ключевых точек и этой
+    картинки согласованы. Нужно для photometric-проверки после варпа
+    (см. `services/matching/verifier.py::_photometric_score`).
+    """
+    resize_scale = (
+        _s.preprocess_query_resize_scale
+        if _s.preprocess_query_resize_scale is not None
+        else _s.preprocess_resize_scale
+    )
+    return load_gray_for_matching(source, max_side, resize_scale, None, None, None)
+
+
+def extract_patch_gray(source: Path | bytes | np.ndarray, max_side: int = 1024) -> np.ndarray:
+    """Grayscale Sentinel-патч после той же предобработки, что видел SIFT."""
+    resize_scale = (
+        _s.preprocess_patch_resize_scale
+        if _s.preprocess_patch_resize_scale is not None
+        else _s.preprocess_resize_scale
+    )
+    return load_gray_for_matching(source, max_side, resize_scale, None, None, None)
