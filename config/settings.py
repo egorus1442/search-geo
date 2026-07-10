@@ -56,9 +56,16 @@ class Settings(BaseSettings):
     #        больших площадях, см. историю и честный тест).
     # vlad — VLAD поверх RootSIFT + PCA-whitening: агрегирует остатки к
     #        центроидам, гораздо различимее BoVW, ложится в FAISS так же.
+    # dino — DINOv2 (ViT-S/14) глобальный эмбеддинг патча (cls|mean|gem pooling).
+    #        Кодирует «место» из САМОЙ картинки, а не из SIFT — устойчивее к
+    #        domain gap UAV↔Sentinel и к низкотекстурному контенту (лес/поля).
+    # dino_vlad — AnyLoc: VLAD-агрегация DINOv2 patch-токенов. Обычно различимее
+    #        плоского pooling'а на больших площадях, ценой размерности вектора.
     # Verifier (SIFT+RANSAC) не зависит от этого выбора — coarse только
-    # выбирает top_n_coarse кандидатов на дорогую геометрическую проверку.
-    coarse_method: str = "vlad"  # bovw | vlad
+    # выбирает кандидатов на дорогую геометрическую проверку.
+    # dino/dino_vlad кодируют из КАРТИНКИ (input_kind="image"), vlad/bovw — из
+    # SIFT-дескрипторов; index_task/localize диспетчеризуют по input_kind.
+    coarse_method: str = "vlad"  # bovw | vlad | dino | dino_vlad
 
     # ── BoVW ──────────────────────────────────────────────────────────────────
     vocab_size: int = 1024
@@ -81,6 +88,28 @@ class Settings(BaseSettings):
     faiss_n_probe: int = 32
     faiss_index_path: Path = Path("/data/index/patch_index.faiss")
     vocab_path: Path = Path("/data/index/vocabulary.pkl")
+
+    # ── Global descriptors (DINOv2 / AnyLoc) ──────────────────────────────────
+    # Нейросетевой coarse-дескриптор (COARSE_METHOD=dino|dino_vlad). torch/timm —
+    # опциональные зависимости, импортируются лениво только под эти методы (см.
+    # services/features/dino.py). Веса timm скачиваются в кэш при первом запуске.
+    global_model_name: str = "vit_small_patch14_dinov2.lvd142m"
+    global_descriptor_dim: int = 384          # embed_dim бэкбона (dim для pooling-голов)
+    global_image_size: int = 224              # кратно patch=14; больше → точнее, но дороже CPU
+    global_pooling: str = "gem"               # cls | mean | gem (для method=dino)
+    global_gem_p: float = 3.0                 # степень GeM-pooling
+    global_index_path: Path = Path("/data/index/global_index.faiss")  # отдельный FAISS
+    global_model_path: Path = Path("/data/index/global_encoder.pkl")  # конфиг/словарь энкодера
+    global_top_k: int = 300                   # k FAISS-кандидатов на verifier (image-методы)
+    # Ниже этого числа патчей глобальный индекс строится как Flat (точный),
+    # а не IVF — на малой базе IVF режет верный ответ (см. историю coarse-провала).
+    global_use_ivf_threshold: int = 50000
+    # AnyLoc (dino_vlad): VLAD поверх DINOv2 patch-токенов.
+    global_vlad_n_centroids: int = 32         # dim = n_centroids * global_descriptor_dim
+    global_vlad_sample_per_patch: int = 100   # токенов на патч для обучения k-means
+    global_vlad_kmeans_n_init: int = 3
+    # torch: 0 = авто (не трогаем set_num_threads), >0 = зафиксировать число потоков.
+    torch_num_threads: int = 0
 
     # ── Tiling ────────────────────────────────────────────────────────────────
     patch_size_px: int = 256

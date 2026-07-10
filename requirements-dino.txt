@@ -1,0 +1,16 @@
+# Опциональные зависимости для нейро-coarse (COARSE_METHOD=dino | dino_vlad).
+# НЕ входят в базовую сборку (requirements.txt) — ставить только если нужен DINOv2.
+#
+# CPU-инференс (у нас нет GPU). torch/torchvision ставить с CPU-индекса, чтобы
+# не тянуть CUDA (timm требует совместимый torchvision — важно ставить их из
+# одного индекса, иначе ломается импорт: "operator torchvision::nms does not exist"):
+#   pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cpu
+#   pip install "timm>=1.0.0"
+# В образе это уже делает Dockerfile (ARG WITH_DINO=1). Версии закреплены по
+# проверенной связке.
+#
+# Веса модели (GLOBAL_MODEL_NAME) timm скачивает в кэш при первом запуске
+# (~90 МБ для vit_small_patch14_dinov2). В офлайн-окружении прогрейте кэш заранее.
+torch==2.13.0
+torchvision==0.28.0
+timm>=1.0.0

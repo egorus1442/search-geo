@@ -7,9 +7,13 @@
 
 ```bash
 cp .env.example .env
-# Отредактировать .env: CDSE_CLIENT_ID, CDSE_CLIENT_SECRET
-# Получить credentials: https://dataspace.copernicus.eu/
+# Отредактировать .env: CDSE_USERNAME, CDSE_PASSWORD (аккаунт dataspace.copernicus.eu)
+# Выбрать coarse-метод: COARSE_METHOD=vlad|bovw|dino|dino_vlad (см. README)
 ```
+
+> Для нейро-методов (`dino`/`dino_vlad`) образ должен быть собран с torch/timm:
+> `docker-compose build` (в `Dockerfile` включён `ARG WITH_DINO=1`). Классические
+> `vlad`/`bovw` дополнительных зависимостей не требуют.
 
 ## 2. Запуск сервисов
 
@@ -47,15 +51,18 @@ docker-compose exec api python scripts/ingest_region.py \
 
 ## 5. Построение индекса
 
+Индекс строится под текущий `COARSE_METHOD` (см. `.env`). При смене метода
+пересоберите индекс и перезагрузите.
+
 ```bash
-# Шаг 1: обучить BoVW словарь
+# Шаг 1: подготовить/обучить coarse-энкодер (BoVW/VLAD — обучение; dino — no-op)
 curl -X POST http://localhost:8000/api/v1/admin/index/vocabulary
 
-# Шаг 2: построить FAISS индекс
+# Шаг 2: построить FAISS индекс (для dino/dino_vlad — отдельный GLOBAL_INDEX_PATH)
 curl -X POST http://localhost:8000/api/v1/admin/index/build
 
-# Или через CLI:
-docker-compose exec api python scripts/build_vocab.py
+# Шаг 3: перезагрузить индекс в работающем сервисе
+curl -X POST http://localhost:8000/api/v1/admin/index/reload
 ```
 
 ## 6. Геолокализация
@@ -117,7 +124,7 @@ geovision/
 ├── services/
 │   ├── db/             # SQLAlchemy модели + сессии
 │   ├── ingestor/       # CDSE клиент, tile cutter, MinIO
-│   ├── features/       # SIFT, BoVW Vocabulary
+│   ├── features/       # SIFT + coarse-энкодеры (BoVW, VLAD, DINOv2, AnyLoc)
 │   ├── index/          # FAISS store, PostgreSQL metadata repo
 │   ├── matching/       # RANSAC верификатор, online pipeline
 │   └── api/            # FastAPI app + routes
@@ -140,13 +147,25 @@ geovision/
 
 | Переменная | По умолчанию | Описание |
 |---|---|---|
+| `COARSE_METHOD` | vlad | Метод coarse-отбора: `bovw` \| `vlad` \| `dino` \| `dino_vlad` |
 | `SIFT_N_FEATURES` | 2000 | Макс. ключевых точек SIFT |
 | `VOCAB_SIZE` | 1024 | Размер BoVW словаря |
 | `FAISS_N_LISTS` | 256 | Ячейки IVF |
 | `FAISS_N_PROBE` | 32 | Проверяемых ячеек при поиске |
 | `PATCH_SIZE_PX` | 256 | Размер патча в пикселях |
 | `PATCH_OVERLAP_RATIO` | 0.25 | Перекрытие патчей |
-| `TOP_N_COARSE` | 100 | Кандидаты после FAISS |
+| `TOP_N_COARSE` | 100 | Кандидаты после FAISS (для `vlad`/`bovw`) |
 | `TOP_N_RESULT` | 10 | Финальные результаты |
 | `LOWE_RATIO` | 0.75 | Lowe ratio test |
 | `RANSAC_THRESHOLD` | 5.0 | RANSAC reprojection error (px) |
+
+**Нейро-методы (`dino`/`dino_vlad`), ключевые параметры:**
+
+| Переменная | По умолчанию | Описание |
+|---|---|---|
+| `GLOBAL_MODEL_NAME` | vit_small_patch14_dinov2.lvd142m | Бэкбон DINOv2 (timm) |
+| `GLOBAL_IMAGE_SIZE` | 224 | Размер входа сети (кратно 14) |
+| `GLOBAL_POOLING` | gem | Пулинг для `dino`: `cls` \| `mean` \| `gem` |
+| `GLOBAL_TOP_K` | 300 | Кандидаты после FAISS (для `dino`/`dino_vlad`) |
+| `GLOBAL_INDEX_PATH` | /data/index/global_index.faiss | Отдельный FAISS-индекс нейро-методов |
+| `TORCH_NUM_THREADS` | 0 | Потоки torch на CPU (0 = авто) |

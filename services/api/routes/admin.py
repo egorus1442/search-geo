@@ -7,7 +7,7 @@ from services.api.schemas import IndexStatsResponse, IngestRequest, TaskResponse
 from services.db.session import SyncSessionLocal
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo, TaskRepo
-from services.features.coarse import load_coarse_encoder
+from services.features.coarse import coarse_index_path, load_coarse_encoder
 from services.matching.localize import reload_indexes
 from workers.tasks.ingest_task import run_ingest
 from workers.tasks.index_task import build_vocabulary, build_index
@@ -107,7 +107,7 @@ def reload_index():
 def index_stats():
     """Статистика FAISS индекса и базы патчей."""
     try:
-        store = FaissStore.load()
+        store = FaissStore.load(path=coarse_index_path())
         stats = store.stats()
     except FileNotFoundError:
         stats = {"ntotal": 0, "dim": 0, "n_lists": 0, "n_probe": 0, "is_trained": False}

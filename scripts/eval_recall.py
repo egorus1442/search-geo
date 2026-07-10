@@ -63,8 +63,17 @@ def _haversine_km(lon1, lat1, lon2, lat2) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def _build_encoder(method: str, desc_list: list[np.ndarray]):
-    """Обучить временный coarse-энкодер на дескрипторах выбранных патчей."""
+IMAGE_METHODS = {"dino", "dino_vlad"}
+
+
+def _build_encoder(method: str, desc_list: list[np.ndarray], image_list: list[bytes]):
+    """
+    Обучить/подготовить временный coarse-энкодер на выбранных патчах.
+
+    vlad/bovw — на SIFT-дескрипторах (desc_list); dino/dino_vlad — на картинках
+    (image_list): dino не обучается (pretrained), dino_vlad учит k-means по
+    DINOv2-токенам.
+    """
     if method == "vlad":
         enc = VladEncoder()
         enc.fit(lambda: iter(desc_list))
@@ -72,6 +81,14 @@ def _build_encoder(method: str, desc_list: list[np.ndarray]):
     if method == "bovw":
         enc = Vocabulary()
         enc.fit(iter(desc_list))
+        return enc
+    if method == "dino":
+        from services.features.dino import DinoEncoder  # ленивый импорт torch/timm
+        return DinoEncoder()
+    if method == "dino_vlad":
+        from services.features.dino import DinoVladEncoder
+        enc = DinoVladEncoder()
+        enc.fit_images(lambda: iter(image_list))
         return enc
     raise click.ClickException(f"Unknown method: {method}")
 
@@ -86,7 +103,8 @@ def _build_encoder(method: str, desc_list: list[np.ndarray]):
 @click.option("--product-contains", default=None, help="Фильтр source_tiles.product_id")
 @click.option("--patch-size", default=None, type=int, help="Фильтр patch_size")
 @click.option("--bbox", default=None, help="Фильтр центров: lon_min,lat_min,lon_max,lat_max")
-@click.option("--methods", default="bovw,vlad", show_default=True, help="Список методов через запятую")
+@click.option("--methods", default="bovw,vlad", show_default=True,
+              help="Список методов через запятую: bovw,vlad,dino,dino_vlad")
 @click.option("--ks", default="1,5,10,50,100", show_default=True, help="Значения K для recall@K")
 @click.option("--fit/--no-fit", default=True, show_default=True,
               help="Обучать временный энкодер на выбранных патчах (иначе загрузить боевой)")
@@ -166,9 +184,12 @@ def main(
     click.echo(f"query={Path(query).name} q_features={len(query_desc)} candidates={len(candidates)}")
     click.echo("loading candidate descriptors...")
     desc_by_id: dict[int, np.ndarray] = {}
+    bytes_by_id: dict[int, bytes] = {}
     for c in candidates:
         try:
-            _, d = extract_patch_descriptors(download_bytes(c["s3_path"]))
+            raw = download_bytes(c["s3_path"])
+            bytes_by_id[c["patch_id"]] = raw
+            _, d = extract_patch_descriptors(raw)
             if d is not None:
                 desc_by_id[c["patch_id"]] = d
         except Exception as exc:
@@ -176,6 +197,7 @@ def main(
 
     valid = [c for c in candidates if c["patch_id"] in desc_by_id]
     desc_list = [desc_by_id[c["patch_id"]] for c in valid]
+    image_list = [bytes_by_id[c["patch_id"]] for c in valid]
     click.echo(f"candidates with descriptors: {len(valid)}")
 
     if not fit:
@@ -188,16 +210,26 @@ def main(
     click.echo("-" * len(header))
 
     for method in method_list:
+        is_image = method in IMAGE_METHODS
         t0 = time.time()
-        enc = _build_encoder(method, desc_list)
+        enc = _build_encoder(method, desc_list, image_list)
         t_fit = time.time() - t0
 
         t1 = time.time()
-        q_vec = enc.encode(query_desc)
-        dists = []
-        for c in valid:
-            v = enc.encode(desc_by_id[c["patch_id"]])
-            dists.append((float(np.linalg.norm(q_vec - v)), c["patch_id"]))
+        if is_image:
+            # dino/dino_vlad: кодируем из КАРТИНКИ (оригинал query/патча, без
+            # SIFT-препроцессинга) — DINOv2 сам ресайзит до GLOBAL_IMAGE_SIZE.
+            q_vec = enc.encode_image(query_bytes)
+            dists = []
+            for c in valid:
+                v = enc.encode_image(bytes_by_id[c["patch_id"]])
+                dists.append((float(np.linalg.norm(q_vec - v)), c["patch_id"]))
+        else:
+            q_vec = enc.encode(query_desc)
+            dists = []
+            for c in valid:
+                v = enc.encode(desc_by_id[c["patch_id"]])
+                dists.append((float(np.linalg.norm(q_vec - v)), c["patch_id"]))
         t_enc = time.time() - t1
 
         dists.sort(key=lambda x: x[0])

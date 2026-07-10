@@ -29,7 +29,11 @@ from services.features.sift import (
     extract_query_descriptors,
     extract_query_gray,
 )
-from services.features.coarse import load_coarse_encoder
+from services.features.coarse import (
+    coarse_index_path,
+    encoder_input_kind,
+    load_coarse_encoder,
+)
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo
 from services.ingestor.storage import download_bytes
@@ -48,7 +52,8 @@ def _get_vocab():
 
 @lru_cache(maxsize=1)
 def _get_faiss() -> FaissStore:
-    return FaissStore.load()
+    # Нейро-методы (dino/dino_vlad) держат отдельный индекс (GLOBAL_INDEX_PATH).
+    return FaissStore.load(path=coarse_index_path())
 
 
 @lru_cache(maxsize=1)
@@ -103,13 +108,20 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
             logger.warning("localize_no_candidates")
             return []
     else:
-        # ── Step 2: coarse encoding (BoVW или VLAD, см. COARSE_METHOD) ─────────
+        # ── Step 2: coarse encoding (COARSE_METHOD) ───────────────────────────
         vocab = _get_vocab()
-        query_hist = vocab.encode(query_desc)
+        if encoder_input_kind(vocab) == "image":
+            # dino/dino_vlad: эмбеддинг «места» из САМОЙ картинки query (без SIFT
+            # и без query-resize 0.06 — DINOv2 сам ресайзит до GLOBAL_IMAGE_SIZE).
+            query_hist = vocab.encode_image(image_bytes)  # type: ignore[attr-defined]
+            coarse_k = _s.global_top_k
+        else:
+            query_hist = vocab.encode(query_desc)
+            coarse_k = _s.top_n_coarse
 
         # ── Step 3: FAISS coarse search ────────────────────────────────────────
         store = _get_faiss()
-        distances, candidate_ids = store.search(query_hist, k=_s.top_n_coarse)
+        distances, candidate_ids = store.search(query_hist, k=coarse_k)
 
         # Фильтруем невалидные ID (-1 у FAISS означает пустую ячейку)
         valid_ids = [int(pid) for pid in candidate_ids if pid != -1]

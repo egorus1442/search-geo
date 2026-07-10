@@ -40,39 +40,61 @@ class FaissStore:
         n_lists: int | None = None,
         n_probe: int | None = None,
         index_path: Path | None = None,
+        flat: bool = False,
     ) -> None:
         self.dim = dim or _s.vocab_size
         self.n_lists = n_lists or _s.faiss_n_lists
         self.n_probe = n_probe or _s.faiss_n_probe
         self.index_path = Path(index_path or _s.faiss_index_path)
+        # flat=True → точный IndexFlatL2 (без обучения). На малой базе IVF режет
+        # верный ответ, поэтому глобальный индекс строится Flat ниже порога
+        # GLOBAL_USE_IVF_THRESHOLD (см. workers/tasks/index_task.py).
+        self.flat = flat
         self._index: faiss.Index | None = None  # type: ignore[name-defined]
 
     # ── Build ─────────────────────────────────────────────────────────────────
 
     def _create_index(self) -> faiss.IndexIDMap:  # type: ignore[name-defined]
         """
-        IndexIDMap(IndexIVFFlat) — позволяет хранить произвольные int64 ID
-        вместо автоинкрементных (нужно для маппинга на patch_id из PostgreSQL).
+        IndexIDMap поверх IVFFlat (или FlatL2 при self.flat) — позволяет хранить
+        произвольные int64 ID вместо автоинкрементных (маппинг на patch_id).
         """
+        if self.flat:
+            return faiss.IndexIDMap(faiss.IndexFlatL2(self.dim))
         quantizer = faiss.IndexFlatL2(self.dim)
         ivf = faiss.IndexIVFFlat(quantizer, self.dim, self.n_lists, faiss.METRIC_L2)
-        index = faiss.IndexIDMap(ivf)
-        return index
+        return faiss.IndexIDMap(ivf)
 
-    def _ivf(self) -> faiss.IndexIVFFlat:  # type: ignore[name-defined]
-        """Достать внутренний IVF индекс для train/nprobe."""
-        return faiss.downcast_index(self._index.index)  # type: ignore[union-attr]
+    def _ivf(self):  # type: ignore[name-defined]
+        """Внутренний IVF индекс или None, если это Flat."""
+        try:
+            inner = faiss.downcast_index(self._index.index)  # type: ignore[union-attr]
+            return inner if isinstance(inner, faiss.IndexIVF) else None
+        except Exception:
+            return None
+
+    def _maybe_set_nprobe(self) -> None:
+        ivf = self._ivf()
+        if ivf is not None:
+            ivf.nprobe = self.n_probe
 
     def train(self, vectors: np.ndarray) -> None:
         """
         Обучить IVF quantizer на всём наборе векторов.
-        Требуется до add(). vectors: float32 (N, dim).
+        Требуется до add(). vectors: float32 (N, dim). Для flat — только создаёт
+        индекс (обучение не нужно).
         """
         vectors = self._validate(vectors)
         # Размерность индекса определяется фактическими векторами, а не
         # vocab_size — coarse-энкодеры дают разную dim (BoVW=vocab_size,
-        # VLAD=pca_dim или n_centroids*128). См. services.features.coarse.
+        # VLAD=pca_dim или n_centroids*128, DINOv2=embed_dim). См. coarse.py.
         self.dim = vectors.shape[1]
+
+        if self.flat:
+            self._index = self._create_index()
+            logger.info("faiss_flat_created", n_vectors=len(vectors), dim=self.dim)
+            return
+
         if vectors.shape[0] < self.n_lists:
             self.n_lists = max(1, vectors.shape[0] // 4)
             logger.warning(
@@ -120,7 +142,7 @@ class FaissStore:
         if query.ndim == 1:
             query = query.reshape(1, -1)
 
-        self._ivf().nprobe = self.n_probe
+        self._maybe_set_nprobe()
         distances, ids = self._index.search(query, k)
         return distances[0], ids[0]
 
@@ -142,7 +164,8 @@ class FaissStore:
             raise FileNotFoundError(f"FAISS index not found at {path}")
         store = cls(index_path=path, n_probe=n_probe)
         store._index = faiss.read_index(str(path))
-        store._ivf().nprobe = store.n_probe
+        store.flat = store._ivf() is None
+        store._maybe_set_nprobe()
         logger.info(
             "faiss_loaded",
             path=str(path),
@@ -157,7 +180,10 @@ class FaissStore:
 
     @property
     def is_trained(self) -> bool:
-        return self._index is not None and self._ivf().is_trained
+        if self._index is None:
+            return False
+        ivf = self._ivf()
+        return ivf.is_trained if ivf is not None else True  # flat всегда готов
 
     # ── Utils ─────────────────────────────────────────────────────────────────
 
@@ -168,10 +194,11 @@ class FaissStore:
     def stats(self) -> dict[str, Any]:
         if self._index is None:
             return {"status": "not_loaded"}
+        ivf = self._ivf()
         return {
             "ntotal": self._index.ntotal,
             "dim": self._index.d,
-            "n_lists": self.n_lists,
-            "n_probe": self.n_probe,
-            "is_trained": self._ivf().is_trained,
+            "n_lists": self.n_lists if ivf is not None else 0,
+            "n_probe": self.n_probe if ivf is not None else 0,
+            "is_trained": ivf.is_trained if ivf is not None else True,
         }
