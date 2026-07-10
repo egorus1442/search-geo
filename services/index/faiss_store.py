@@ -69,6 +69,10 @@ class FaissStore:
         Требуется до add(). vectors: float32 (N, dim).
         """
         vectors = self._validate(vectors)
+        # Размерность индекса определяется фактическими векторами, а не
+        # vocab_size — coarse-энкодеры дают разную dim (BoVW=vocab_size,
+        # VLAD=pca_dim или n_centroids*128). См. services.features.coarse.
+        self.dim = vectors.shape[1]
         if vectors.shape[0] < self.n_lists:
             self.n_lists = max(1, vectors.shape[0] // 4)
             logger.warning(

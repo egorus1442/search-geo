@@ -7,7 +7,7 @@ from services.api.schemas import IndexStatsResponse, IngestRequest, TaskResponse
 from services.db.session import SyncSessionLocal
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo, TaskRepo
-from services.features.vocabulary import Vocabulary
+from services.features.coarse import load_coarse_encoder
 from services.matching.localize import reload_indexes
 from workers.tasks.ingest_task import run_ingest
 from workers.tasks.index_task import build_vocabulary, build_index
@@ -112,11 +112,13 @@ def index_stats():
     except FileNotFoundError:
         stats = {"ntotal": 0, "dim": 0, "n_lists": 0, "n_probe": 0, "is_trained": False}
 
+    from config import get_settings
+    coarse_method = get_settings().coarse_method
     try:
-        vocab = Vocabulary.load()
-        vocab_size = vocab.vocab_size
+        encoder = load_coarse_encoder()
+        coarse_dim = encoder.dim
     except FileNotFoundError:
-        vocab_size = 0
+        coarse_dim = 0
 
     with SyncSessionLocal() as session:
         patch_count = PatchRepo(session).count_patches()
@@ -127,6 +129,7 @@ def index_stats():
         faiss_n_lists=stats.get("n_lists", 0),
         faiss_n_probe=stats.get("n_probe", 0),
         faiss_is_trained=stats.get("is_trained", False),
-        vocab_size=vocab_size,
+        coarse_method=coarse_method,
+        vocab_size=coarse_dim,
         patch_count_db=patch_count,
     )

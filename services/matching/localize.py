@@ -29,7 +29,7 @@ from services.features.sift import (
     extract_query_descriptors,
     extract_query_gray,
 )
-from services.features.vocabulary import Vocabulary
+from services.features.coarse import load_coarse_encoder
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo
 from services.ingestor.storage import download_bytes
@@ -41,8 +41,9 @@ _s = get_settings()
 
 
 @lru_cache(maxsize=1)
-def _get_vocab() -> Vocabulary:
-    return Vocabulary.load()
+def _get_vocab():
+    """Обученный coarse-энкодер (BoVW или VLAD, см. COARSE_METHOD)."""
+    return load_coarse_encoder()
 
 
 @lru_cache(maxsize=1)
@@ -102,7 +103,7 @@ def localize(image_bytes: bytes, top_n: int | None = None) -> list[dict[str, Any
             logger.warning("localize_no_candidates")
             return []
     else:
-        # ── Step 2: BoVW encoding ─────────────────────────────────────────────
+        # ── Step 2: coarse encoding (BoVW или VLAD, см. COARSE_METHOD) ─────────
         vocab = _get_vocab()
         query_hist = vocab.encode(query_desc)
 

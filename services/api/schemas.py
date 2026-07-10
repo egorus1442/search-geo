@@ -73,7 +73,8 @@ class IndexStatsResponse(BaseModel):
     faiss_n_lists: int
     faiss_n_probe: int
     faiss_is_trained: bool
-    vocab_size: int
+    coarse_method: str = "unknown"
+    vocab_size: int  # для VLAD — размерность coarse-вектора (dim), для BoVW — размер словаря
     patch_count_db: int
 
 

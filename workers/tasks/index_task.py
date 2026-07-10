@@ -8,15 +8,16 @@ import io
 import numpy as np
 
 from workers.celery_app import app
-from config import get_logger
+from config import get_logger, get_settings
 from services.db.session import SyncSessionLocal
 from services.features.sift import extract_patch_descriptors
-from services.features.vocabulary import Vocabulary
+from services.features.coarse import load_coarse_encoder, new_coarse_encoder
 from services.index.faiss_store import FaissStore
 from services.index.metadata_store import PatchRepo
 from services.ingestor.storage import download_bytes
 
 logger = get_logger(__name__)
+_s = get_settings()
 
 
 @app.task(
@@ -27,10 +28,14 @@ logger = get_logger(__name__)
 )
 def build_vocabulary(self) -> dict:
     """
-    Шаг 1: обучить BoVW словарь на SIFT дескрипторах из базы патчей.
-    Сохраняет vocabulary.pkl в /data/index/.
+    Шаг 1: обучить coarse-энкодер (BoVW словарь или VLAD, см. COARSE_METHOD)
+    на SIFT-дескрипторах из базы патчей. Сохраняет модель в /data/index/.
+
+    VLAD проходит по базе дважды (k-means центроидов, затем PCA-whitening),
+    поэтому дескрипторы отдаются через фабрику потоков (re-iterable).
     """
-    logger.info("vocab_build_start")
+    method = _s.coarse_method.lower()
+    logger.info("coarse_build_start", method=method)
 
     with SyncSessionLocal() as session:
         repo = PatchRepo(session)
@@ -40,13 +45,13 @@ def build_vocabulary(self) -> dict:
     if n_total == 0:
         raise ValueError("No patches in database. Run ingest first.")
 
-    logger.info("vocab_patch_count", n=n_total)
+    logger.info("coarse_patch_count", n=n_total, method=method)
 
     def descriptor_stream():
         for i, pid in enumerate(patch_ids):
             if i % 500 == 0:
-                logger.info("vocab_stream_progress", i=i, total=n_total)
-                self.update_state(state="PROGRESS", meta={"step": "vocab", "progress": i / n_total})
+                logger.info("coarse_stream_progress", i=i, total=n_total)
+                self.update_state(state="PROGRESS", meta={"step": "coarse", "progress": i / n_total})
             try:
                 with SyncSessionLocal() as session:
                     repo = PatchRepo(session)
@@ -59,14 +64,18 @@ def build_vocabulary(self) -> dict:
                 if descs is not None:
                     yield descs
             except Exception as exc:
-                logger.warning("vocab_stream_error", patch_id=pid, error=str(exc))
+                logger.warning("coarse_stream_error", patch_id=pid, error=str(exc))
 
-    vocab = Vocabulary()
-    vocab.fit(descriptor_stream())
-    path = vocab.save()
+    encoder = new_coarse_encoder(method)
+    # VLAD ждёт фабрику потоков (двойной проход), BoVW — одиночный генератор.
+    if method == "vlad":
+        encoder.fit(descriptor_stream)  # type: ignore[arg-type]
+    else:
+        encoder.fit(descriptor_stream())  # type: ignore[call-arg]
+    path = encoder.save()
 
-    logger.info("vocab_build_done", path=str(path))
-    return {"status": "done", "vocab_path": str(path), "vocab_size": vocab.vocab_size}
+    logger.info("coarse_build_done", path=str(path), method=method, dim=encoder.dim)
+    return {"status": "done", "coarse_method": method, "model_path": str(path), "dim": encoder.dim}
 
 
 @app.task(
@@ -77,12 +86,12 @@ def build_vocabulary(self) -> dict:
 )
 def build_index(self) -> dict:
     """
-    Шаг 2: закодировать все патчи в BoVW гистограммы и построить FAISS индекс.
-    Требует предварительно обученного словаря (build_vocabulary).
+    Шаг 2: закодировать все патчи в coarse-векторы (BoVW или VLAD) и построить
+    FAISS индекс. Требует предварительно обученного энкодера (build_vocabulary).
     """
-    logger.info("index_build_start")
+    logger.info("index_build_start", method=_s.coarse_method)
 
-    vocab = Vocabulary.load()
+    vocab = load_coarse_encoder()
 
     with SyncSessionLocal() as session:
         repo = PatchRepo(session)

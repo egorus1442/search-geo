@@ -51,10 +51,30 @@ class Settings(BaseSettings):
     preprocess_use_clahe: bool = False           # адаптивное выравнивание контраста
     preprocess_use_lcn: bool = False             # локальная нормализация контраста ("норм. карта")
 
+    # ── Coarse retrieval (какой глобальный дескриптор кормит FAISS) ─────────────
+    # bovw — старый tf-idf Bag of Visual Words (грубый, режет верный патч на
+    #        больших площадях, см. историю и честный тест).
+    # vlad — VLAD поверх RootSIFT + PCA-whitening: агрегирует остатки к
+    #        центроидам, гораздо различимее BoVW, ложится в FAISS так же.
+    # Verifier (SIFT+RANSAC) не зависит от этого выбора — coarse только
+    # выбирает top_n_coarse кандидатов на дорогую геометрическую проверку.
+    coarse_method: str = "vlad"  # bovw | vlad
+
     # ── BoVW ──────────────────────────────────────────────────────────────────
     vocab_size: int = 1024
     vocab_sample_per_patch: int = 50
     vocab_kmeans_n_init: int = 10
+
+    # ── VLAD ──────────────────────────────────────────────────────────────────
+    # RootSIFT (Hellinger-норм: L1 → sqrt) применяется внутри энкодера к
+    # дескрипторам ДО агрегации — дешёвый и стабильный прирост recall, не
+    # затрагивает raw-SIFT дескрипторы, которые уходят в verifier.
+    vlad_n_centroids: int = 64          # размер VLAD = n_centroids * 128 до PCA
+    vlad_sample_per_patch: int = 100    # сколько дескрипторов брать на патч для k-means
+    vlad_kmeans_n_init: int = 3
+    vlad_use_pca: bool = True           # PCA-whitening финального VLAD-вектора
+    vlad_pca_dim: int = 256             # итоговая размерность после PCA-whitening
+    vlad_path: Path = Path("/data/index/vlad.pkl")
 
     # ── FAISS ─────────────────────────────────────────────────────────────────
     faiss_n_lists: int = 256

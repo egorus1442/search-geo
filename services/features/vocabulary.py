@@ -155,3 +155,8 @@ class Vocabulary:
     @property
     def is_fitted(self) -> bool:
         return self._kmeans is not None and self._idf is not None
+
+    @property
+    def dim(self) -> int:
+        """Размерность вектора, уходящего в FAISS (для интерфейса coarse)."""
+        return self.vocab_size

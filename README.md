@@ -10,20 +10,22 @@
 
 ## Как это работает
 
-Классический CV-пайплайн: SIFT-дескрипторы → Bag of Visual Words → приближённый поиск FAISS → геометрическая проверка RANSAC.
+Классический CV-пайплайн: SIFT-дескрипторы → глобальный дескриптор патча (coarse-стадия) → приближённый поиск FAISS → геометрическая проверка RANSAC.
+
+Coarse-стадия pluggable (настройка `COARSE_METHOD`): по умолчанию **VLAD** поверх RootSIFT + PCA-whitening (различимее и лучше масштабируется на большие площади), альтернатива — старый **BoVW** (tf-idf). Слой взаимозаменяем — verifier (SIFT+RANSAC) от выбора не зависит.
 
 ```mermaid
 flowchart LR
     subgraph offline["Offline: построение базы"]
         S2[Sentinel-2 тайлы] --> Cut[Нарезка на патчи 256×256]
         Cut --> Feat1[SIFT дескрипторы]
-        Feat1 --> Vocab[BoVW словарь]
+        Feat1 --> Vocab[Coarse-энкодер<br/>VLAD/RootSIFT или BoVW]
         Vocab --> Idx[FAISS IVF индекс]
     end
 
     subgraph online["Online: геолокализация"]
         Photo[Фото с дрона] --> Feat2[SIFT дескрипторы]
-        Feat2 --> BoVW2[BoVW гистограмма]
+        Feat2 --> BoVW2[Coarse-вектор<br/>VLAD/RootSIFT или BoVW]
         BoVW2 --> Search[FAISS поиск: top-100]
         Search --> Match[BFMatcher + RANSAC]
         Match --> Result[Top-N координат]

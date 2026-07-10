@@ -128,7 +128,7 @@ def main(
         scored = []
         for p in subset:
             try:
-                _, desc = load_desc_cached(p["s3_path"])
+                _, desc, _ = load_desc_cached(p["s3_path"])  # (kp, desc, gray)
                 if desc is None:
                     continue
                 hist = vocab.encode(desc)
