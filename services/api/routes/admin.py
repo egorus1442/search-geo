@@ -20,16 +20,17 @@ logger = get_logger(__name__)
 
 @router.post("/ingest", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
 def start_ingest(req: IngestRequest):
-    """Запустить скачивание Sentinel-2 снимков и нарезку на патчи."""
+    """Запустить скачивание мозаики Esri World Imagery и нарезку на патчи."""
     with SyncSessionLocal() as session:
         task_repo = TaskRepo(session)
         task = task_repo.create(
             task_type="ingest",
             params={
                 "bbox": req.bbox,
-                "date_from": req.date_from,
-                "date_to": req.date_to,
-                "cloud_cover_max": req.cloud_cover_max,
+                "gsd_m": req.gsd_m,
+                "patch_size": req.patch_size,
+                "clip_to_bbox": req.clip_to_bbox,
+                "run_label": req.run_label,
             },
         )
         task_id = str(task.id)
@@ -37,9 +38,10 @@ def start_ingest(req: IngestRequest):
     celery_task = run_ingest.apply_async(
         kwargs={
             "bbox": req.bbox,
-            "date_from": req.date_from,
-            "date_to": req.date_to,
-            "cloud_cover_max": req.cloud_cover_max,
+            "gsd_m": req.gsd_m,
+            "patch_size": req.patch_size,
+            "clip_to_bbox": req.clip_to_bbox,
+            "run_label": req.run_label,
             "task_db_id": task_id,
         },
         queue="ingest",

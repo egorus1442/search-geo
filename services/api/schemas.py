@@ -31,16 +31,27 @@ class CandidateItem(BaseModel):
 # ── Ingest ────────────────────────────────────────────────────────────────────
 
 class IngestRequest(BaseModel):
+    """Параметры ingestion из Esri World Imagery (источник заменён с Sentinel/CDSE)."""
+
     bbox: list[float] = Field(
         ...,
         min_length=4,
         max_length=4,
         description="[lon_min, lat_min, lon_max, lat_max]",
-        examples=[[35.0, 50.0, 40.0, 55.0]],
+        examples=[[61.47, 56.17, 61.57, 56.24]],
     )
-    date_from: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", examples=["2023-06-01"])
-    date_to: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", examples=["2024-09-30"])
-    cloud_cover_max: float = Field(default=20.0, ge=0, le=100)
+    gsd_m: float | None = Field(
+        default=None, gt=0, le=100,
+        description="Целевое разрешение эталона, м/пкс (по умолчанию settings.esri_gsd_m)",
+        examples=[1.0],
+    )
+    patch_size: int | None = Field(
+        default=None, gt=0,
+        description="Размер патча в пикселях (footprint_м = patch_size * gsd_m)",
+        examples=[640],
+    )
+    clip_to_bbox: bool = Field(default=False)
+    run_label: str | None = Field(default=None, description="Метка для повторной нарезки того же bbox")
 
     @field_validator("bbox")
     @classmethod

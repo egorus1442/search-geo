@@ -28,11 +28,26 @@ class Settings(BaseSettings):
     minio_bucket: str = "geovision"
     minio_secure: bool = False
 
-    # ── CDSE ──────────────────────────────────────────────────────────────────
+    # ── CDSE (устаревший источник; ingestion переведён на Esri, см. ниже) ───────
     # Логин и пароль от аккаунта dataspace.copernicus.eu
     # Создавать отдельный OAuth client не нужно
     cdse_username: str = ""
     cdse_password: str = ""
+
+    # ── Esri World Imagery (текущий источник эталонной базы) ────────────────────
+    # ArcGIS REST `export` endpoint глобальной мозаики World Imagery. Отдаёт
+    # георефернс-растр на произвольный bbox с целевым GSD, что снимает
+    # первопричину провала verifier'а на низкодетальной местности (Sentinel
+    # 10 м → Esri ~0.5–1 м: появляются кромки полей, развилки дорог, застройка).
+    # ВНИМАНИЕ по лицензии: пригодно для оценочных пулов; условия Esri basemap
+    # не дают прав на постоянную производную базу для коммерческого продукта.
+    esri_export_url: str = (
+        "https://services.arcgisonline.com/arcgis/rest/services/"
+        "World_Imagery/MapServer/export"
+    )
+    esri_gsd_m: float = 1.0            # целевое разрешение эталона, м/пкс
+    esri_max_request_px: int = 1024    # сторона одного export-запроса (2048+ зависают)
+    esri_fetch_workers: int = 8        # параллельных запросов блоков к export
 
     # ── SIFT ──────────────────────────────────────────────────────────────────
     sift_n_features: int = 2000

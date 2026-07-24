@@ -1,23 +1,27 @@
 """
-Celery task: скачать Sentinel-2 снимки по bbox и нарезать на патчи.
+Celery task: скачать мозаику Esri World Imagery по bbox и нарезать на патчи.
+
+Источник эталонной базы переведён с Sentinel-2/CDSE на Esri World Imagery
+(~0.5–1 м/пкс вместо 10 м) — это снимает первопричину провала verifier'а на
+низкодетальной местности. Сам CDSE-клиент (services/ingestor/cdse_client.py)
+оставлен в репозитории для справки, но в пайплайне ingestion не используется.
 
 Очередь: ingest
 """
-import shutil
 import tempfile
-import uuid
-from datetime import date
 from pathlib import Path
 
 from workers.celery_app import app
-from config import get_logger
+from config import get_logger, get_settings
+from services.db.models import utcnow
 from services.db.session import SyncSessionLocal
 from services.index.metadata_store import PatchRepo
-from services.ingestor.cdse_client import CDSEClient
-from services.ingestor.tile_cutter import cut_patches, extract_safe
+from services.ingestor.esri_client import fetch_mosaic_to_geotiff
+from services.ingestor.tile_cutter import cut_patches_from_raster
 from services.ingestor.storage import ensure_bucket
 
 logger = get_logger(__name__)
+_s = get_settings()
 
 
 @app.task(
@@ -30,118 +34,98 @@ logger = get_logger(__name__)
 def run_ingest(
     self,
     bbox: list[float],
-    date_from: str,
-    date_to: str,
-    cloud_cover_max: float = 20.0,
-    task_db_id: str | None = None,
-    max_products: int | None = None,
-    max_patches_per_product: int | None = None,
+    gsd_m: float | None = None,
     patch_size: int | None = None,
+    overlap_ratio: float | None = None,
+    task_db_id: str | None = None,
+    max_patches: int | None = None,
     clip_to_bbox: bool = False,
     run_label: str | None = None,
 ) -> dict:
     """
-    Скачать продукты Sentinel-2 по параметрам и нарезать на патчи.
+    Скачать мозаику Esri World Imagery на bbox и нарезать на патчи.
 
-    bbox: [lon_min, lat_min, lon_max, lat_max]
-    date_from / date_to: "YYYY-MM-DD"
+    bbox: [lon_min, lat_min, lon_max, lat_max] (WGS84)
+    gsd_m: целевое разрешение эталона, м/пкс (по умолчанию settings.esri_gsd_m)
+    patch_size: размер патча в пикселях (footprint_м = patch_size * gsd_m)
+    run_label: метка источника; нужна для повторной нарезки того же bbox
     """
-    logger.info("ingest_start", bbox=bbox, date_from=date_from, date_to=date_to)
+    gsd_m = gsd_m or _s.esri_gsd_m
+    logger.info("ingest_start", bbox=bbox, gsd_m=gsd_m, patch_size=patch_size)
 
     ensure_bucket()
 
-    d_from = date.fromisoformat(date_from)
-    d_to = date.fromisoformat(date_to)
-
-    client = CDSEClient()
-    products = client.search(
-        bbox=bbox,
-        date_from=d_from,
-        date_to=d_to,
-        cloud_cover_max=cloud_cover_max,
-        max_results=max_products or 100,
+    # Уникальный идентификатор источника (unique-constraint в SourceTile).
+    # Повторную нарезку того же bbox разрешаем через run_label.
+    lon_min, lat_min, lon_max, lat_max = bbox
+    source_id = (
+        f"esri:{lon_min:.4f},{lat_min:.4f},{lon_max:.4f},{lat_max:.4f}@{gsd_m}"
     )
-    logger.info("ingest_found_products", count=len(products))
+    if run_label:
+        source_id = f"{source_id}:{run_label}"
 
-    stats = {"products_found": len(products), "tiles_downloaded": 0, "patches_created": 0, "skipped": 0}
+    stats = {"patches_created": 0, "skipped": 0, "source_id": source_id}
 
     with SyncSessionLocal() as session:
         repo = PatchRepo(session)
 
-        for product in products:
-            product_id: str = product["Id"]
-            product_name: str = product.get("Name", product_id)
-            source_product_id = f"{product_id}:{run_label}" if run_label else product_id
+        if repo.tile_exists(source_id):
+            logger.info("ingest_skip_existing", source_id=source_id)
+            stats["skipped"] = 1
+            return stats
 
-            # Пропустить уже обработанные
-            if repo.tile_exists(source_product_id):
-                logger.info("ingest_skip_existing", product_id=source_product_id)
-                stats["skipped"] += 1
-                continue
+        tile_record = repo.create_source_tile(
+            product_id=source_id,
+            bbox=(lon_min, lat_min, lon_max, lat_max),
+            date_acq=utcnow(),
+            cloud_cover=None,
+        )
+        session.commit()
 
-            # Создаём запись SourceTile
-            content_date = product.get("ContentDate", {}).get("Start", date_from)
-            cloud_cover = None
-            for attr in product.get("Attributes", []):
-                if attr.get("Name") == "cloudCover":
-                    cloud_cover = attr.get("Value")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tif_path = Path(tmpdir) / "esri_mosaic.tif"
+            try:
+                fetch_mosaic_to_geotiff(bbox, out_path=tif_path, gsd_m=gsd_m)
 
-            tile_record = repo.create_source_tile(
-                product_id=source_product_id,
-                bbox=bbox,  # упрощение: используем запросный bbox
-                date_acq=content_date,
-                cloud_cover=cloud_cover,
-            )
-            session.commit()
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                tmp_path = Path(tmpdir)
-                try:
-                    zip_path = client.download(product_id, output_dir=tmp_path)
-                    safe_dir = extract_safe(zip_path, tmp_path / "safe")
-                    stats["tiles_downloaded"] += 1
-
-                    patch_count = 0
-                    for patch_meta in cut_patches(
-                        safe_dir=safe_dir,
-                        source_tile_id=str(tile_record.id),
-                        patch_size=patch_size,
-                        aoi_bbox=bbox if clip_to_bbox else None,
-                    ):
-                        if max_patches_per_product is not None and patch_count >= max_patches_per_product:
-                            logger.info(
-                                "ingest_patch_limit_reached",
-                                product_id=product_id,
-                                max_patches=max_patches_per_product,
-                            )
-                            break
-                        repo.create_patch(
-                            source_tile_id=tile_record.id,
-                            center_lon=patch_meta.center_lon,
-                            center_lat=patch_meta.center_lat,
-                            bbox=patch_meta.bbox,
-                            s3_path=patch_meta.s3_key,
-                            patch_size=patch_meta.patch_size,
-                            gsd_m=patch_meta.gsd_m,
+                patch_count = 0
+                for patch_meta in cut_patches_from_raster(
+                    raster_path=tif_path,
+                    source_tile_id=str(tile_record.id),
+                    patch_size=patch_size,
+                    overlap_ratio=overlap_ratio,
+                    gsd_m=gsd_m,
+                    aoi_bbox=bbox if clip_to_bbox else None,
+                ):
+                    if max_patches is not None and patch_count >= max_patches:
+                        logger.info("ingest_patch_limit_reached", max_patches=max_patches)
+                        break
+                    repo.create_patch(
+                        source_tile_id=tile_record.id,
+                        center_lon=patch_meta.center_lon,
+                        center_lat=patch_meta.center_lat,
+                        bbox=patch_meta.bbox,
+                        s3_path=patch_meta.s3_key,
+                        patch_size=patch_meta.patch_size,
+                        gsd_m=patch_meta.gsd_m,
+                    )
+                    patch_count += 1
+                    if patch_count % 100 == 0:
+                        session.commit()
+                        self.update_state(
+                            state="PROGRESS",
+                            meta={**stats, "patches_created": patch_count},
                         )
-                        patch_count += 1
-                        if patch_count % 100 == 0:
-                            session.commit()
-                            self.update_state(
-                                state="PROGRESS",
-                                meta={**stats, "patches_created": stats["patches_created"] + patch_count},
-                            )
 
-                    session.commit()
-                    repo.mark_tile_processed(tile_record.id)
-                    session.commit()
-                    stats["patches_created"] += patch_count
-                    logger.info("ingest_tile_done", product_id=product_id, patches=patch_count)
+                session.commit()
+                repo.mark_tile_processed(tile_record.id)
+                session.commit()
+                stats["patches_created"] = patch_count
+                logger.info("ingest_tile_done", source_id=source_id, patches=patch_count)
 
-                except Exception as exc:
-                    logger.error("ingest_tile_failed", product_id=product_id, error=str(exc))
-                    session.rollback()
-                    # Не прерываем весь джоб из-за одного тайла
+            except Exception as exc:
+                logger.error("ingest_failed", source_id=source_id, error=str(exc))
+                session.rollback()
+                raise
 
     logger.info("ingest_done", **stats)
     return stats

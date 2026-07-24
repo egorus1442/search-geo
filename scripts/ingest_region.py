@@ -2,12 +2,13 @@
 """
 CLI скрипт: запустить ingestion синхронно (без Celery) для отладки и первичного запуска.
 
-Пример:
+Источник — Esri World Imagery (заменил Sentinel-2/CDSE).
+
+Пример (эталон ~1 м вокруг Багаряка, патчи 640 px = 640 м footprint):
     python scripts/ingest_region.py \
-        --bbox 35.0 50.0 40.0 55.0 \
-        --date-from 2023-06-01 \
-        --date-to 2024-09-30 \
-        --cloud-cover 20
+        --bbox 61.47 56.17 61.57 56.24 \
+        --gsd 1.0 \
+        --patch-size 640
 """
 import sys
 from pathlib import Path
@@ -26,50 +27,38 @@ logger = get_logger(__name__)
 
 @click.command()
 @click.option("--bbox", nargs=4, type=float, required=True, metavar="LON_MIN LAT_MIN LON_MAX LAT_MAX")
-@click.option("--date-from", required=True, help="YYYY-MM-DD")
-@click.option("--date-to", required=True, help="YYYY-MM-DD")
-@click.option("--cloud-cover", default=20.0, type=float, show_default=True)
-@click.option("--max-products", default=None, type=int, help="Limit CDSE products to download")
-@click.option("--max-patches-per-product", default=None, type=int, help="Limit patches cut from each product")
-@click.option("--patch-size", default=None, type=int, help="Override patch size in pixels")
-@click.option("--clip-to-bbox", is_flag=True, default=False, help="Only keep patches intersecting the requested bbox")
-@click.option("--run-label", default=None, help="Optional label to allow reprocessing the same CDSE product")
+@click.option("--gsd", "gsd_m", default=None, type=float, help="Целевой GSD эталона, м/пкс (по умолчанию из settings)")
+@click.option("--patch-size", default=None, type=int, help="Размер патча в пикселях (footprint = patch_size * gsd)")
+@click.option("--overlap-ratio", default=None, type=float, help="Перекрытие патчей (доля)")
+@click.option("--max-patches", default=None, type=int, help="Лимит числа патчей (отладка)")
+@click.option("--clip-to-bbox", is_flag=True, default=False, help="Оставлять только патчи, пересекающие bbox")
+@click.option("--run-label", default=None, help="Метка для повторной нарезки того же bbox")
 @click.option("--log-level", default="INFO", show_default=True)
 def main(
     bbox,
-    date_from,
-    date_to,
-    cloud_cover,
-    max_products,
-    max_patches_per_product,
+    gsd_m,
     patch_size,
+    overlap_ratio,
+    max_patches,
     clip_to_bbox,
     run_label,
     log_level,
 ):
-    """Скачать Sentinel-2 снимки и нарезать на патчи."""
+    """Скачать мозаику Esri World Imagery и нарезать на патчи."""
     configure_logging(log_level)
     ensure_bucket()
 
     bbox_list = list(bbox)
-    logger.info(
-        "ingest_start",
-        bbox=bbox_list,
-        date_from=date_from,
-        date_to=date_to,
-        cloud_cover=cloud_cover,
-    )
+    logger.info("ingest_start", bbox=bbox_list, gsd_m=gsd_m, patch_size=patch_size)
 
     # Запускаем синхронно через .apply() — без брокера
     result = run_ingest.apply(
         kwargs={
             "bbox": bbox_list,
-            "date_from": date_from,
-            "date_to": date_to,
-            "cloud_cover_max": cloud_cover,
-            "max_products": max_products,
-            "max_patches_per_product": max_patches_per_product,
+            "gsd_m": gsd_m,
             "patch_size": patch_size,
+            "overlap_ratio": overlap_ratio,
+            "max_patches": max_patches,
             "clip_to_bbox": clip_to_bbox,
             "run_label": run_label,
         }
